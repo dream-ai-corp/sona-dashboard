@@ -18,6 +18,10 @@ import {
   Loader2,
   Calendar,
   Target,
+  Clock,
+  AlertCircle,
+  CheckCircle2,
+  RotateCcw,
 } from 'lucide-react';
 
 interface Service {
@@ -44,6 +48,12 @@ interface BacklogItem {
   checked: boolean;
 }
 
+interface BacklogSection {
+  header: string | null;
+  level: number;
+  items: BacklogItem[];
+}
+
 interface Sprint {
   id: string;
   name: string;
@@ -51,6 +61,16 @@ interface Sprint {
   startDate: string;
   endDate: string;
   status: 'planning' | 'active' | 'completed';
+}
+
+interface Job {
+  id: string;
+  goal?: string;
+  status: string;
+  startedAt?: number;
+  completedAt?: number;
+  elapsedSec?: number;
+  mtime?: number;
 }
 
 function statusStyle(status: string) {
@@ -94,6 +114,39 @@ const primaryBtnStyle: React.CSSProperties = {
   color: '#a78bfa', fontSize: '12px', fontWeight: 600,
   cursor: 'pointer', fontFamily: 'inherit',
 };
+
+function BacklogHeader({ header, level }: { header: string; level: number }) {
+  return (
+    <div
+      data-testid="backlog-section-header"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        marginBottom: '10px',
+        marginTop: '4px',
+        borderLeft: level === 2
+          ? '2px solid rgba(124,58,237,0.5)'
+          : level === 3
+          ? '2px solid rgba(6,182,212,0.4)'
+          : 'none',
+        paddingLeft: level >= 2 ? '10px' : '0',
+      }}
+    >
+      <span
+        style={{
+          fontSize: level === 1 ? '14px' : level === 2 ? '13px' : '12px',
+          fontWeight: 700,
+          color: level === 1 ? '#e2e8f0' : level === 2 ? '#a78bfa' : '#67e8f9',
+          letterSpacing: '0.02em',
+          lineHeight: 1.3,
+        }}
+      >
+        {header}
+      </span>
+    </div>
+  );
+}
 
 function BacklogItemRow({
   item,
@@ -350,6 +403,7 @@ export default function ProjectDetailPage() {
 
   const [project, setProject] = useState<Project | null>(null);
   const [items, setItems] = useState<BacklogItem[]>([]);
+  const [sections, setSections] = useState<BacklogSection[]>([]);
   const [loadingProject, setLoadingProject] = useState(true);
   const [loadingBacklog, setLoadingBacklog] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -369,6 +423,15 @@ export default function ProjectDetailPage() {
   });
   const [sprintSaving, setSprintSaving] = useState(false);
 
+  // Jobs history state
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [loadingJobs, setLoadingJobs] = useState(true);
+
+  // Status badge dropdown
+  const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
+  const [statusSaving, setStatusSaving] = useState(false);
+  const statusDropdownRef = useRef<HTMLDivElement>(null);
+
   const fetchProject = useCallback(async () => {
     try {
       const res = await fetch('/api/projects');
@@ -386,9 +449,10 @@ export default function ProjectDetailPage() {
     setLoadingBacklog(true);
     try {
       const res = await fetch(`/api/projects/${encodeURIComponent(id)}/backlog`);
-      const data = await res.json() as { items?: BacklogItem[]; error?: string };
+      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; error?: string };
       if (data.error) throw new Error(data.error);
       setItems(data.items ?? []);
+      setSections(data.sections ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load backlog');
     } finally {
@@ -416,12 +480,26 @@ export default function ProjectDetailPage() {
     }
   }, [id]);
 
+  const fetchJobs = useCallback(async () => {
+    setLoadingJobs(true);
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/jobs`);
+      const data = await res.json() as { jobs?: Job[] };
+      setJobs(data.jobs ?? []);
+    } catch {
+      setJobs([]);
+    } finally {
+      setLoadingJobs(false);
+    }
+  }, [id]);
+
   useEffect(() => {
     fetchProject();
     fetchBacklog();
     fetchBrief();
     fetchSprints();
-  }, [fetchProject, fetchBacklog, fetchBrief, fetchSprints]);
+    fetchJobs();
+  }, [fetchProject, fetchBacklog, fetchBrief, fetchSprints, fetchJobs]);
 
   const handleToggle = async (item: BacklogItem) => {
     setSaving(true);
@@ -434,8 +512,9 @@ export default function ProjectDetailPage() {
           body: JSON.stringify({ checked: !item.checked }),
         },
       );
-      const data = await res.json() as { items?: BacklogItem[] };
+      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
       if (data.items) setItems(data.items);
+      if (data.sections) setSections(data.sections);
     } finally {
       setSaving(false);
     }
@@ -452,8 +531,9 @@ export default function ProjectDetailPage() {
           body: JSON.stringify({ text }),
         },
       );
-      const data = await res.json() as { items?: BacklogItem[] };
+      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
       if (data.items) setItems(data.items);
+      if (data.sections) setSections(data.sections);
     } finally {
       setSaving(false);
     }
@@ -469,8 +549,9 @@ export default function ProjectDetailPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       });
-      const data = await res.json() as { items?: BacklogItem[] };
+      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
       if (data.items) setItems(data.items);
+      if (data.sections) setSections(data.sections);
       setNewItemText('');
     } finally {
       setSaving(false);
@@ -527,6 +608,36 @@ export default function ProjectDetailPage() {
     setSprints(data.sprints);
   };
 
+  const handleStatusChange = async (newStatus: string) => {
+    if (!project || statusSaving) return;
+    setStatusSaving(true);
+    setStatusDropdownOpen(false);
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (res.ok) {
+        setProject((prev) => prev ? { ...prev, status: newStatus } : prev);
+      }
+    } finally {
+      setStatusSaving(false);
+    }
+  };
+
+  // Close status dropdown on outside click
+  useEffect(() => {
+    if (!statusDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (statusDropdownRef.current && !statusDropdownRef.current.contains(e.target as Node)) {
+        setStatusDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [statusDropdownOpen]);
+
   const open = items.filter((i) => !i.checked);
   const done = items.filter((i) => i.checked);
   const ss = project ? statusStyle(project.status) : statusStyle('active');
@@ -566,13 +677,59 @@ export default function ProjectDetailPage() {
               {loadingProject ? id : (project?.name ?? id)}
             </h1>
             {project && (
-              <span style={{
-                fontSize: '10px', fontWeight: 700, padding: '3px 9px', borderRadius: '20px',
-                background: ss.bg, color: ss.color, border: `1px solid ${ss.border}`,
-                textTransform: 'uppercase', letterSpacing: '0.05em',
-              }}>
-                {project.status}
-              </span>
+              <div ref={statusDropdownRef} style={{ position: 'relative' }}>
+                <button
+                  data-testid="status-badge"
+                  aria-label="Change project status"
+                  onClick={() => setStatusDropdownOpen((o) => !o)}
+                  disabled={statusSaving}
+                  style={{
+                    fontSize: '10px', fontWeight: 700, padding: '3px 9px', borderRadius: '20px',
+                    background: ss.bg, color: ss.color, border: `1px solid ${ss.border}`,
+                    textTransform: 'uppercase', letterSpacing: '0.05em',
+                    cursor: statusSaving ? 'not-allowed' : 'pointer',
+                    fontFamily: 'inherit', transition: 'all 150ms',
+                  }}
+                >
+                  {project.status}
+                </button>
+                {statusDropdownOpen && (
+                  <div style={{
+                    position: 'absolute', top: 'calc(100% + 6px)', left: 0,
+                    background: '#0f0f1a', border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '10px', padding: '4px', zIndex: 100,
+                    minWidth: '110px', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+                  }}>
+                    {(['active', 'paused', 'archived'] as const).map((s) => {
+                      const st = statusStyle(s);
+                      const isCurrent = project.status.toLowerCase() === s;
+                      return (
+                        <button
+                          key={s}
+                          onClick={() => handleStatusChange(s)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '7px',
+                            width: '100%', padding: '7px 10px', borderRadius: '7px',
+                            background: isCurrent ? st.bg : 'transparent',
+                            border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                            fontSize: '12px', fontWeight: 600,
+                            color: isCurrent ? st.color : '#64748b',
+                            textAlign: 'left', transition: 'all 100ms',
+                          }}
+                          onMouseEnter={(e) => { if (!isCurrent) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
+                          onMouseLeave={(e) => { if (!isCurrent) e.currentTarget.style.background = 'transparent'; }}
+                        >
+                          <span style={{
+                            width: '7px', height: '7px', borderRadius: '50%',
+                            background: st.color, flexShrink: 0,
+                          }} />
+                          {s.charAt(0).toUpperCase() + s.slice(1)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             )}
           </div>
           <button
@@ -881,9 +1038,60 @@ export default function ProjectDetailPage() {
               <div style={{ textAlign: 'center', padding: '24px 0', color: '#334155', fontSize: '13px' }}>
                 No backlog items yet. Add one above.
               </div>
+            ) : sections.length > 0 ? (
+              <div>
+                {sections.map((section, si) => {
+                  const sOpen = section.items.filter((i) => !i.checked);
+                  const sDone = section.items.filter((i) => i.checked);
+                  return (
+                    <div key={si} style={{ marginBottom: si < sections.length - 1 ? '20px' : 0 }}>
+                      {section.header !== null && (
+                        <BacklogHeader header={section.header} level={section.level} />
+                      )}
+                      {sOpen.length > 0 && (
+                        <div style={{ marginBottom: sDone.length > 0 ? '10px' : 0 }}>
+                          <div style={{ fontSize: '11px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                            Open · {sOpen.length}
+                          </div>
+                          {sOpen.map((item) => (
+                            <BacklogItemRow
+                              key={item.index}
+                              item={item}
+                              onToggle={handleToggle}
+                              onEdit={handleEdit}
+                              saving={saving}
+                            />
+                          ))}
+                        </div>
+                      )}
+                      {sDone.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: '11px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                            Done · {sDone.length}
+                          </div>
+                          {sDone.map((item) => (
+                            <BacklogItemRow
+                              key={item.index}
+                              item={item}
+                              onToggle={handleToggle}
+                              onEdit={handleEdit}
+                              saving={saving}
+                            />
+                          ))}
+                        </div>
+                      )}
+                      {section.items.length === 0 && section.header !== null && (
+                        <div style={{ fontSize: '12px', color: '#334155', paddingLeft: '4px' }}>
+                          No items in this section.
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             ) : (
               <div>
-                {/* Open items */}
+                {/* Fallback: flat open/done when no sections data */}
                 {open.length > 0 && (
                   <div style={{ marginBottom: '16px' }}>
                     <div style={{ fontSize: '11px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
@@ -900,8 +1108,6 @@ export default function ProjectDetailPage() {
                     ))}
                   </div>
                 )}
-
-                {/* Done items */}
                 {done.length > 0 && (
                   <div>
                     <div style={{ fontSize: '11px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
@@ -918,6 +1124,123 @@ export default function ProjectDetailPage() {
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+
+          {/* Job History */}
+          <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Job History</h2>
+                {loadingJobs && <Loader2 size={13} color="#a78bfa" className="animate-spin" />}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '11px', color: '#475569' }}>{jobs.length} job{jobs.length !== 1 ? 's' : ''}</span>
+                <button
+                  onClick={fetchJobs}
+                  disabled={loadingJobs}
+                  style={{
+                    background: 'none', border: 'none', cursor: loadingJobs ? 'not-allowed' : 'pointer',
+                    color: '#334155', padding: '4px', borderRadius: '6px', display: 'flex',
+                    alignItems: 'center', transition: 'color 150ms',
+                    opacity: loadingJobs ? 0.4 : 1,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#a78bfa')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = '#334155')}
+                  title="Refresh jobs"
+                >
+                  <RotateCcw size={13} />
+                </button>
+              </div>
+            </div>
+
+            {loadingJobs ? (
+              <div style={{ textAlign: 'center', padding: '24px 0', color: '#334155', fontSize: '13px' }}>
+                Loading jobs…
+              </div>
+            ) : jobs.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '24px 0', color: '#334155', fontSize: '13px' }}>
+                No jobs found for this project.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {jobs.map((job) => {
+                  const isDone = job.status === 'done' || job.status === 'completed';
+                  const isRunning = job.status === 'running' || job.status === 'in_progress';
+                  const isError = !isDone && !isRunning;
+                  const statusColor = isDone ? '#4ade80' : isRunning ? '#38bdf8' : '#f87171';
+                  const statusBg = isDone ? 'rgba(34,197,94,0.1)' : isRunning ? 'rgba(56,189,248,0.1)' : 'rgba(248,113,113,0.1)';
+                  const statusBorder = isDone ? 'rgba(34,197,94,0.25)' : isRunning ? 'rgba(56,189,248,0.25)' : 'rgba(248,113,113,0.25)';
+                  const StatusIcon = isDone ? CheckCircle2 : isRunning ? Loader2 : AlertCircle;
+
+                  const finishedAt = job.completedAt ?? job.mtime;
+                  const timeAgo = finishedAt ? (() => {
+                    const diffMs = Date.now() - finishedAt;
+                    const diffMin = Math.floor(diffMs / 60000);
+                    const diffHr = Math.floor(diffMin / 60);
+                    const diffDay = Math.floor(diffHr / 24);
+                    if (diffDay > 0) return `${diffDay}d ago`;
+                    if (diffHr > 0) return `${diffHr}h ago`;
+                    if (diffMin > 0) return `${diffMin}m ago`;
+                    return 'just now';
+                  })() : null;
+
+                  return (
+                    <div
+                      key={job.id}
+                      style={{
+                        display: 'flex', alignItems: 'flex-start', gap: '12px',
+                        padding: '12px 14px', borderRadius: '10px',
+                        background: 'rgba(255,255,255,0.025)',
+                        border: '1px solid rgba(255,255,255,0.07)',
+                        transition: 'border-color 150ms',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.07)')}
+                    >
+                      <StatusIcon
+                        size={15}
+                        color={statusColor}
+                        style={{ flexShrink: 0, marginTop: '1px' }}
+                        className={isRunning ? 'animate-spin' : undefined}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontSize: '12px', color: '#cbd5e1', lineHeight: 1.5,
+                          display: '-webkit-box', WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                          marginBottom: '5px',
+                        }}>
+                          {job.goal ?? '(no goal)'}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <code style={{
+                            fontSize: '10px', color: '#475569',
+                            fontFamily: 'monospace',
+                          }}>
+                            {job.id.slice(0, 8)}
+                          </code>
+                          <span style={{
+                            fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '20px',
+                            background: statusBg, color: statusColor, border: `1px solid ${statusBorder}`,
+                            textTransform: 'uppercase', letterSpacing: '0.04em',
+                          }}>
+                            {job.status}
+                          </span>
+                          {job.elapsedSec != null && (
+                            <span style={{ fontSize: '10px', color: '#475569', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                              <Clock size={9} /> {job.elapsedSec}s
+                            </span>
+                          )}
+                          {timeAgo && (
+                            <span style={{ fontSize: '10px', color: '#334155' }}>{timeAgo}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

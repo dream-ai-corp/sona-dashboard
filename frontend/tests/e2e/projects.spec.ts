@@ -125,4 +125,73 @@ test.describe("Projects page", () => {
       test.skip();
     }
   });
+
+  test("project detail page shows Job History section", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const firstCard = page.locator('a[href^="/projects/"]').first();
+    if ((await firstCard.count()) > 0) {
+      await firstCard.click();
+      await page.waitForLoadState("networkidle");
+      // Job History heading must be visible
+      await expect(page.locator("main h2", { hasText: "Job History" })).toBeVisible();
+      // No application error
+      await expect(page.locator("text=Application error")).not.toBeVisible();
+    } else {
+      test.skip();
+    }
+  });
+
+  test("project detail page job history shows job count", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const firstCard = page.locator('a[href^="/projects/"]').first();
+    if ((await firstCard.count()) > 0) {
+      await firstCard.click();
+      await page.waitForLoadState("networkidle");
+      // Should show either "N jobs" count or "No jobs found"
+      const jobCount = page.locator("text=/\\d+ jobs?/");
+      const emptyMsg = page.locator("text=No jobs found for this project.");
+      await expect(jobCount.or(emptyMsg)).toBeVisible({ timeout: 10000 });
+    } else {
+      test.skip();
+    }
+  });
+
+  test("backlog section headers render with dark-mode styling", async ({ page }) => {
+    await page.goto("/projects/sona-dashboard");
+    await page.waitForLoadState("networkidle");
+
+    await page.waitForSelector('[data-testid="backlog-section-header"]', { timeout: 10000 });
+
+    const headers = page.locator('[data-testid="backlog-section-header"]');
+    const count = await headers.count();
+    expect(count).toBeGreaterThan(0);
+
+    const firstHeader = headers.first();
+    await expect(firstHeader).toBeVisible();
+
+    // Inner span should use dark-mode accent color, not plain black or white
+    const headerSpan = firstHeader.locator("span").first();
+    const color = await headerSpan.evaluate((el) => getComputedStyle(el).color);
+    expect(color).not.toBe("rgb(0, 0, 0)");
+    expect(color).not.toBe("rgb(255, 255, 255)");
+  });
+
+  test("backlog groups items under sprint section headers", async ({ page }) => {
+    await page.goto("/projects/sona-dashboard");
+    await page.waitForLoadState("networkidle");
+
+    const headers = page.locator('[data-testid="backlog-section-header"]');
+    const headerCount = await headers.count();
+    if (headerCount === 0) {
+      test.skip();
+      return;
+    }
+
+    await expect(headers.first()).toBeVisible();
+    await expect(page.locator("text=Application error")).not.toBeVisible();
+  });
 });
