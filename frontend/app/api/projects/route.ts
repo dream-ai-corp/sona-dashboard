@@ -1,70 +1,17 @@
-import fs from 'fs';
-import path from 'path';
-
 export const dynamic = 'force-dynamic';
 
-const PROJECTS_DIR = '/home/beniben/sona-workspace/projects';
-
-interface RawProjectJson {
-  id?: string;
-  name?: string;
-  description?: string;
-  status?: string;
-  tags?: string[];
-  services?: Array<{ name: string; port: number; url?: string; container?: string }>;
-  git?: { remote?: string };
-  path?: string;
-}
-
-export interface Project {
-  id: string;
-  name: string;
-  description?: string;
-  status: string;
-  tags?: string[];
-  services?: Array<{ name: string; port: number; url?: string; container?: string }>;
-  git?: { remote?: string };
-  hasBacklog: boolean;
-}
-
-function readProject(id: string, dir: string): Project {
-  const jsonPath = path.join(dir, 'project.json');
-  const hasBacklog = fs.existsSync(path.join(dir, 'backlog.md'));
-  try {
-    if (fs.existsSync(jsonPath)) {
-      const raw: RawProjectJson = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
-      return {
-        id,
-        name: raw.name ?? id,
-        description: raw.description,
-        status: raw.status ?? 'active',
-        tags: raw.tags,
-        services: raw.services,
-        git: raw.git,
-        hasBacklog,
-      };
-    }
-  } catch {
-    // ignore parse errors
-  }
-  return { id, name: id, status: 'active', hasBacklog };
-}
+const BACKEND = process.env.BACKEND_URL ?? 'http://backend:3011';
 
 export async function GET() {
   try {
-    const entries = fs
-      .readdirSync(PROJECTS_DIR)
-      .filter(
-        (e) =>
-          e !== '_archive' &&
-          fs.statSync(path.join(PROJECTS_DIR, e)).isDirectory(),
-      );
-    const projects = entries.map((name) =>
-      readProject(name, path.join(PROJECTS_DIR, name)),
-    );
-    return Response.json({ projects });
+    const res = await fetch(`${BACKEND}/api/projects`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = await res.json();
+    return Response.json(data, { status: res.status });
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'error';
-    return Response.json({ error: msg }, { status: 500 });
+    const msg = err instanceof Error ? err.message : 'backend unreachable';
+    return Response.json({ error: msg }, { status: 503 });
   }
 }

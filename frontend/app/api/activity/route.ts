@@ -1,17 +1,17 @@
-import { readFile } from "node:fs/promises";
+export const dynamic = 'force-dynamic';
 
-export const dynamic = "force-dynamic";
+const BACKEND = process.env.BACKEND_URL ?? 'http://backend:3011';
 
 export async function GET() {
   try {
-    const raw = await readFile("/home/beniben/sona-workspace/activity-log.ndjson", "utf8");
-    const events = raw
-      .split("\n")
-      .filter(Boolean)
-      .map((line: string) => { try { return JSON.parse(line); } catch { return null; } })
-      .filter(Boolean);
-    return Response.json(events.slice(-500));
-  } catch {
-    return Response.json([]);
+    const res = await fetch(`${BACKEND}/api/activity`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = await res.json();
+    return Response.json(data, { status: res.status });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'backend unreachable';
+    return Response.json({ error: msg }, { status: 503 });
   }
 }

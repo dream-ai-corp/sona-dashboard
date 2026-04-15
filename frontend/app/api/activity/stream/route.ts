@@ -1,81 +1,46 @@
-import fs from 'fs';
-
 export const dynamic = 'force-dynamic';
 
-const ACTIVITY_LOG = '/home/beniben/sona-workspace/activity-log.ndjson';
+const BACKEND = process.env.BACKEND_URL ?? 'http://backend:3011';
 
-function readEvents(limit = 200): unknown[] {
-  try {
-    const raw = fs.readFileSync(ACTIVITY_LOG, 'utf8');
-    return raw
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => { try { return JSON.parse(line); } catch { return null; } })
-      .filter(Boolean)
-      .slice(-limit);
-  } catch {
-    return [];
-  }
-}
-
-export async function GET() {
+export async function GET(req: Request) {
   const encoder = new TextEncoder();
   let closed = false;
-  let watcher: fs.FSWatcher | null = null;
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
-  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-
-  const cleanup = () => {
-    closed = true;
-    if (debounceTimer) clearTimeout(debounceTimer);
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
-    try { watcher?.close(); } catch {}
-  };
 
   const stream = new ReadableStream({
-    start(controller) {
+    async start(controller) {
       const send = (text: string) => {
         if (closed) return;
-        try { controller.enqueue(encoder.encode(text)); } catch { cleanup(); }
+        try { controller.enqueue(encoder.encode(text)); } catch { closed = true; }
       };
 
-      const pushEvents = () => {
-        try {
-          const events = readEvents(200);
-          send(`data: ${JSON.stringify(events)}\n\n`);
-        } catch { /* ignore */ }
-      };
-
-      const scheduleDebounce = () => {
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(pushEvents, 300);
-      };
-
-      // Send initial snapshot
-      pushEvents();
-
-      // Watch the activity log file for changes
       try {
-        if (fs.existsSync(ACTIVITY_LOG)) {
-          watcher = fs.watch(ACTIVITY_LOG, () => scheduleDebounce());
-          watcher.on('error', () => { /* ignore */ });
-        } else {
-          // Poll every 3s if file doesn't exist yet
-          const pollTimer = setInterval(() => {
-            if (fs.existsSync(ACTIVITY_LOG)) {
-              clearInterval(pollTimer);
-              watcher = fs.watch(ACTIVITY_LOG, () => scheduleDebounce());
-            }
-            pushEvents();
-          }, 3000);
-        }
-      } catch { /* fs.watch not supported */ }
+        const upstream = await fetch(`${BACKEND}/api/activity/stream`, {
+          signal: req.signal,
+          headers: { Accept: 'text/event-stream' },
+        });
 
-      // Heartbeat every 25s
-      heartbeatTimer = setInterval(() => send(': heartbeat\n\n'), 25_000);
+        if (!upstream.ok || !upstream.body) {
+          send(`data: []\n\n`);
+          controller.close();
+          return;
+        }
+
+        const reader = upstream.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done || closed) break;
+          send(decoder.decode(value, { stream: true }));
+        }
+      } catch {
+        send(`data: []\n\n`);
+      } finally {
+        if (!closed) { closed = true; try { controller.close(); } catch {} }
+      }
     },
     cancel() {
-      cleanup();
+      closed = true;
     },
   });
 

@@ -434,32 +434,374 @@ app.get("/api/status/stream", async (req, res) => {
   }
 });
 
+// ── Backlog helpers (ported from frontend lib/backlog.ts) ─────────────────────
+function parseBacklog(content) {
+  const items = [];
+  const lines = content.split('\n');
+  let idx = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const checked = /^- \[x\]/i.test(line);
+    const unchecked = /^- \[ \]/.test(line);
+    if (!checked && !unchecked) continue;
+    const text = line.replace(/^- \[.\]\s*/, '').replace(/\s*\(job:[^)]+\)/, '').trim();
+    items.push({ index: idx++, lineIndex: i, text, checked });
+  }
+  return items;
+}
+
+function parseBacklogSections(content) {
+  const sections = [];
+  const lines = content.split('\n');
+  let current = { header: null, level: 0, items: [] };
+  let itemIdx = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const hm = line.match(/^(#{1,3})\s+(.+)$/);
+    if (hm) {
+      if (current.header !== null || current.items.length > 0) sections.push(current);
+      current = { header: hm[2].trim(), level: hm[1].length, items: [] };
+      continue;
+    }
+    const checked = /^- \[x\]/i.test(line);
+    const unchecked = /^- \[ \]/.test(line);
+    if (!checked && !unchecked) continue;
+    const text = line.replace(/^- \[.\]\s*/, '').replace(/\s*\(job:[^)]+\)/, '').trim();
+    current.items.push({ index: itemIdx++, lineIndex: i, text, checked });
+  }
+  if (current.header !== null || current.items.length > 0) sections.push(current);
+  return sections;
+}
+
+const PROJECTS_DIR = "/home/beniben/sona-workspace/projects";
+const ACTIVITY_LOG = "/home/beniben/sona-workspace/activity-log.ndjson";
+const VALID_STATUSES = ['active', 'paused', 'archived'];
+
+function readProjectMeta(name) {
+  const dir = path.join(PROJECTS_DIR, name);
+  const projectJson = path.join(dir, "project.json");
+  const hasBacklog = fs.existsSync(path.join(dir, "backlog.md"));
+  let raw = {};
+  if (fs.existsSync(projectJson)) {
+    try { raw = JSON.parse(fs.readFileSync(projectJson, "utf-8")); } catch {}
+  }
+  return {
+    id: name,
+    name: raw.name ?? name,
+    description: raw.description,
+    status: raw.status ?? 'active',
+    tags: raw.tags,
+    services: raw.services,
+    git: raw.git,
+    path: raw.path,
+    hasBacklog,
+  };
+}
+
 // ── Projects ──────────────────────────────────────────────────────────────────
 app.get("/api/projects", (_req, res) => {
-  const projectsDir = "/home/beniben/sona-workspace/projects";
   const projects = [];
-  if (fs.existsSync(projectsDir)) {
-    for (const name of fs.readdirSync(projectsDir)) {
+  if (fs.existsSync(PROJECTS_DIR)) {
+    for (const name of fs.readdirSync(PROJECTS_DIR)) {
       if (name === "_archive") continue;
-      const dir = path.join(projectsDir, name);
+      const dir = path.join(PROJECTS_DIR, name);
       if (!fs.statSync(dir).isDirectory()) continue;
-      const projectJson = path.join(dir, "project.json");
-      const backlogMd = path.join(dir, "backlog.md");
-      let meta = { name };
-      if (fs.existsSync(projectJson)) {
-        try { Object.assign(meta, JSON.parse(fs.readFileSync(projectJson, "utf-8"))); } catch {}
-      }
-      if (fs.existsSync(backlogMd)) {
-        try {
-          const backlog = fs.readFileSync(backlogMd, "utf-8");
-          meta.hasBacklog = true;
-          meta.backlogPreview = backlog.slice(0, 300);
-        } catch {}
-      }
-      projects.push(meta);
+      projects.push(readProjectMeta(name));
     }
   }
-  res.json(projects);
+  res.json({ projects });
+});
+
+app.get("/api/projects/:name", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const dir = path.join(PROJECTS_DIR, name);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    return res.status(404).json({ error: "project not found" });
+  }
+  res.json(readProjectMeta(name));
+});
+
+// ── Project status ────────────────────────────────────────────────────────────
+app.get("/api/projects/:name/status", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const dir = path.join(PROJECTS_DIR, name);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    return res.status(404).json({ error: "project not found" });
+  }
+  const jsonPath = path.join(dir, "project.json");
+  let raw = {};
+  if (fs.existsSync(jsonPath)) {
+    try { raw = JSON.parse(fs.readFileSync(jsonPath, "utf-8")); } catch {}
+  }
+  res.json({ status: raw.status ?? 'active' });
+});
+
+app.patch("/api/projects/:name/status", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const newStatus = typeof req.body.status === 'string' ? req.body.status.toLowerCase() : null;
+  if (!newStatus || !VALID_STATUSES.includes(newStatus)) {
+    return res.status(400).json({ error: `status must be one of: ${VALID_STATUSES.join(', ')}` });
+  }
+  const dir = path.join(PROJECTS_DIR, name);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    return res.status(404).json({ error: "project not found" });
+  }
+  const jsonPath = path.join(dir, "project.json");
+  let raw = {};
+  if (fs.existsSync(jsonPath)) {
+    try { raw = JSON.parse(fs.readFileSync(jsonPath, "utf-8")); } catch {
+      return res.status(500).json({ error: "failed to parse project.json" });
+    }
+  }
+  raw.status = newStatus;
+  try {
+    fs.writeFileSync(jsonPath, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
+  } catch {
+    return res.status(500).json({ error: "failed to write project.json" });
+  }
+  res.json({ status: newStatus });
+});
+
+// ── Project backlog ───────────────────────────────────────────────────────────
+app.get("/api/projects/:name/backlog", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const filePath = path.join(PROJECTS_DIR, name, "backlog.md");
+  if (!fs.existsSync(filePath)) return res.json({ items: [], sections: [], raw: '' });
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8");
+    res.json({ items: parseBacklog(raw), sections: parseBacklogSections(raw), raw });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/projects/:name/backlog", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  if (typeof req.body.text !== 'string' || !req.body.text.trim()) {
+    return res.status(400).json({ error: "text must be a non-empty string" });
+  }
+  const filePath = path.join(PROJECTS_DIR, name, "backlog.md");
+  try {
+    const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf-8") : '';
+    const newContent = existing
+      + (existing.endsWith('\n') || existing === '' ? '' : '\n')
+      + `- [ ] ${req.body.text.trim()}\n`;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, newContent, "utf-8");
+    const raw = fs.readFileSync(filePath, "utf-8");
+    res.json({ ok: true, items: parseBacklog(raw), sections: parseBacklogSections(raw), raw });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch("/api/projects/:name/backlog/:index", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const index = parseInt(req.params.index, 10);
+  if (isNaN(index) || index < 0) return res.status(400).json({ error: "invalid index" });
+  const filePath = path.join(PROJECTS_DIR, name, "backlog.md");
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: "backlog not found" });
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8");
+    const items = parseBacklog(raw);
+    const item = items.find((it) => it.index === index);
+    if (!item) return res.status(404).json({ error: "item not found" });
+    const lines = raw.split('\n');
+    if (typeof req.body.checked === 'boolean') {
+      const line = lines[item.lineIndex];
+      lines[item.lineIndex] = req.body.checked
+        ? line.replace(/^- \[ \]/, '- [x]')
+        : line.replace(/^- \[x\]/i, '- [ ]');
+    }
+    if (typeof req.body.text === 'string' && req.body.text.trim()) {
+      const line = lines[item.lineIndex];
+      const prefix = (line.match(/^- \[.\]\s*/)?.[0]) ?? '- [ ] ';
+      const jobSuffix = (line.match(/\s*\(job:[^)]+\)/)?.[0]) ?? '';
+      lines[item.lineIndex] = `${prefix}${req.body.text.trim()}${jobSuffix}`;
+    }
+    const newContent = lines.join('\n');
+    fs.writeFileSync(filePath, newContent, "utf-8");
+    res.json({ ok: true, items: parseBacklog(newContent), sections: parseBacklogSections(newContent), raw: newContent });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Project jobs ──────────────────────────────────────────────────────────────
+app.get("/api/projects/:name/jobs", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const jobsDir = path.join(PROJECTS_DIR, name, "jobs");
+  if (!fs.existsSync(jobsDir)) return res.json({ jobs: [] });
+  try {
+    const entries = fs.readdirSync(jobsDir);
+    const jobs = entries
+      .filter((e) => fs.statSync(path.join(jobsDir, e)).isDirectory())
+      .map((e) => parseJobDir(e, path.join(jobsDir, e), name))
+      .filter(Boolean)
+      .sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
+    res.json({ jobs });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Project sprints ───────────────────────────────────────────────────────────
+function readSprints(name) {
+  const filePath = path.join(PROJECTS_DIR, name, "sprints.json");
+  if (!fs.existsSync(filePath)) return [];
+  try {
+    const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    return data.sprints ?? [];
+  } catch { return []; }
+}
+
+function writeSprints(name, sprints) {
+  const filePath = path.join(PROJECTS_DIR, name, "sprints.json");
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify({ sprints }, null, 2), "utf-8");
+}
+
+app.get("/api/projects/:name/sprints", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  res.json({ sprints: readSprints(name) });
+});
+
+app.post("/api/projects/:name/sprints", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const body = req.body;
+  const sprints = readSprints(name);
+  const newSprint = {
+    id: `sprint-${Date.now()}`,
+    name: body.name ?? 'New Sprint',
+    goal: body.goal ?? '',
+    startDate: body.startDate ?? '',
+    endDate: body.endDate ?? '',
+    status: body.status ?? 'planning',
+  };
+  sprints.push(newSprint);
+  writeSprints(name, sprints);
+  res.json({ sprints });
+});
+
+app.patch("/api/projects/:name/sprints/:sprintId", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const { sprintId } = req.params;
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const sprints = readSprints(name);
+  const idx = sprints.findIndex((s) => s.id === sprintId);
+  if (idx === -1) return res.status(404).json({ error: "sprint not found" });
+  sprints[idx] = { ...sprints[idx], ...req.body, id: sprintId };
+  writeSprints(name, sprints);
+  res.json({ sprints });
+});
+
+app.delete("/api/projects/:name/sprints/:sprintId", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  const { sprintId } = req.params;
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const sprints = readSprints(name).filter((s) => s.id !== sprintId);
+  writeSprints(name, sprints);
+  res.json({ sprints });
+});
+
+// ── Project brief ─────────────────────────────────────────────────────────────
+app.get("/api/projects/:name/brief", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const briefPath = path.join(PROJECTS_DIR, name, "brief.md");
+  const content = fs.existsSync(briefPath) ? fs.readFileSync(briefPath, "utf-8") : '';
+  res.json({ content });
+});
+
+app.put("/api/projects/:name/brief", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const briefPath = path.join(PROJECTS_DIR, name, "brief.md");
+  try {
+    fs.mkdirSync(path.dirname(briefPath), { recursive: true });
+    fs.writeFileSync(briefPath, req.body.content ?? '', "utf-8");
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Activity log ──────────────────────────────────────────────────────────────
+app.get("/api/activity", (_req, res) => {
+  try {
+    const raw = fs.readFileSync(ACTIVITY_LOG, "utf-8");
+    const events = raw.split('\n').filter(Boolean).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+    res.json(events.slice(-500));
+  } catch {
+    res.json([]);
+  }
+});
+
+// SSE activity stream — tails activity-log.ndjson with fs.watch
+app.get("/api/activity/stream", (req, res) => {
+  sseHeaders(res);
+
+  let closed = false;
+  let watcher = null;
+  let debounceTimer = null;
+
+  const cleanup = () => {
+    closed = true;
+    if (debounceTimer) clearTimeout(debounceTimer);
+    try { watcher?.close(); } catch {}
+  };
+  req.on("close", cleanup);
+
+  const readEvents = (limit = 200) => {
+    try {
+      const raw = fs.readFileSync(ACTIVITY_LOG, "utf-8");
+      return raw.split('\n').filter(Boolean).map((line) => {
+        try { return JSON.parse(line); } catch { return null; }
+      }).filter(Boolean).slice(-limit);
+    } catch { return []; }
+  };
+
+  const pushEvents = () => {
+    if (!closed && !res.writableEnded) {
+      try { res.write(`data: ${JSON.stringify(readEvents(200))}\n\n`); } catch { cleanup(); }
+    }
+  };
+
+  const scheduleDebounce = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(pushEvents, 300);
+  };
+
+  // Send initial snapshot
+  pushEvents();
+
+  // Watch the activity log file for changes
+  try {
+    if (fs.existsSync(ACTIVITY_LOG)) {
+      watcher = fs.watch(ACTIVITY_LOG, () => scheduleDebounce());
+      watcher.on('error', () => {});
+    } else {
+      const pollTimer = setInterval(() => {
+        if (closed) { clearInterval(pollTimer); return; }
+        if (fs.existsSync(ACTIVITY_LOG)) {
+          clearInterval(pollTimer);
+          watcher = fs.watch(ACTIVITY_LOG, () => scheduleDebounce());
+        }
+        pushEvents();
+      }, 3000);
+    }
+  } catch { /* fs.watch not supported */ }
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────

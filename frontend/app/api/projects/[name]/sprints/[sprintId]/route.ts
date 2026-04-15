@@ -1,53 +1,29 @@
-import fs from 'fs';
-import path from 'path';
-
 export const dynamic = 'force-dynamic';
-const PROJECTS_DIR = '/home/beniben/sona-workspace/projects';
 
-interface Sprint {
-  id: string;
-  name: string;
-  goal: string;
-  startDate: string;
-  endDate: string;
-  status: 'planning' | 'active' | 'completed';
-}
-
-function sprintsPath(name: string): string {
-  return path.join(PROJECTS_DIR, name, 'sprints.json');
-}
-
-function readSprints(name: string): Sprint[] {
-  const filePath = sprintsPath(name);
-  if (!fs.existsSync(filePath)) return [];
-  try {
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as { sprints?: Sprint[] };
-    return data.sprints ?? [];
-  } catch {
-    return [];
-  }
-}
-
-function writeSprints(name: string, sprints: Sprint[]): void {
-  const filePath = sprintsPath(name);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify({ sprints }, null, 2), 'utf-8');
-}
+const BACKEND = process.env.BACKEND_URL ?? 'http://backend:3011';
 
 export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ name: string; sprintId: string }> },
 ) {
   const { name, sprintId } = await params;
-  const body = await req.json() as Partial<Sprint>;
-  const sprints = readSprints(name);
-  const idx = sprints.findIndex((s) => s.id === sprintId);
-  if (idx === -1) {
-    return Response.json({ error: 'sprint not found' }, { status: 404 });
+  try {
+    const body = await req.json();
+    const res = await fetch(
+      `${BACKEND}/api/projects/${encodeURIComponent(name)}/sprints/${encodeURIComponent(sprintId)}`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    const data = await res.json();
+    return Response.json(data, { status: res.status });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'backend unreachable';
+    return Response.json({ error: msg }, { status: 503 });
   }
-  sprints[idx] = { ...sprints[idx], ...body, id: sprintId };
-  writeSprints(name, sprints);
-  return Response.json({ sprints });
 }
 
 export async function DELETE(
@@ -55,8 +31,18 @@ export async function DELETE(
   { params }: { params: Promise<{ name: string; sprintId: string }> },
 ) {
   const { name, sprintId } = await params;
-  const sprints = readSprints(name);
-  const filtered = sprints.filter((s) => s.id !== sprintId);
-  writeSprints(name, filtered);
-  return Response.json({ sprints: filtered });
+  try {
+    const res = await fetch(
+      `${BACKEND}/api/projects/${encodeURIComponent(name)}/sprints/${encodeURIComponent(sprintId)}`,
+      {
+        method: 'DELETE',
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    const data = await res.json();
+    return Response.json(data, { status: res.status });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'backend unreachable';
+    return Response.json({ error: msg }, { status: 503 });
+  }
 }
