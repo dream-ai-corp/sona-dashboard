@@ -1,11 +1,14 @@
 # Dependencies
 node_modules/
+frontend/node_modules/
 /.pnp
 .pnp.js
 
 # Next.js build output
 /.next/
 /out/
+frontend/.next/
+frontend/out/
 
 # Production build
 /build
@@ -42,3 +45,8 @@ Thumbs.db
 
 # Misc
 *.pem
+
+# Playwright
+test-results/
+frontend/test-results/
+playwright-report/

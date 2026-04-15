@@ -1,0 +1,17 @@
+version: "3.8"
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+
+  backend:
+    command: npm run dev
+    volumes:
+      - ./backend:/app
+      - /app/node_modules

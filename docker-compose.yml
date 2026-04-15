@@ -1,18 +1,32 @@
-version: '3.8'
+version: "3.8"
 services:
-  sona-dashboard:
+  frontend:
     build:
-      context: .
-      dockerfile: Dockerfile.dev
-    container_name: sona-dashboard
+      context: ./frontend
+      dockerfile: Dockerfile
     ports:
       - "3010:3000"
-    volumes:
-      - ./:/app
-      - /app/node_modules
     environment:
-      - SONA_API_URL=http://172.17.0.1:8080
-      - NEXT_PUBLIC_SONA_API_URL=http://72.60.185.57:8080
-      - CHOKIDAR_USEPOLLING=true
-      - WATCHPACK_POLLING=true
-    restart: unless-stopped
+      - NEXT_PUBLIC_API_URL=http://backend:3001
+    depends_on:
+      - backend
+    networks:
+      - sona-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - SONA_API_URL=http://host.docker.internal:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - sona-net
+
+networks:
+  sona-net:
+    driver: bridge
