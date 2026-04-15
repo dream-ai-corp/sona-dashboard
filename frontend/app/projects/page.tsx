@@ -11,8 +11,6 @@ import {
   CheckSquare,
   ArrowRight,
   RefreshCw,
-  Plus,
-  Circle,
 } from 'lucide-react';
 
 interface Service {
@@ -32,6 +30,15 @@ interface Project {
   git?: { remote?: string };
   hasBacklog: boolean;
 }
+
+type StatusFilter = 'all' | 'active' | 'paused' | 'archived';
+
+const FILTERS: { value: StatusFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'active', label: 'Active' },
+  { value: 'paused', label: 'Paused' },
+  { value: 'archived', label: 'Archived' },
+];
 
 function statusStyle(status: string): { color: string; bg: string; border: string } {
   switch (status?.toLowerCase()) {
@@ -159,6 +166,7 @@ export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<StatusFilter>('all');
 
   const fetchProjects = async () => {
     setLoading(true);
@@ -176,6 +184,17 @@ export default function ProjectsPage() {
   };
 
   useEffect(() => { fetchProjects(); }, []);
+
+  const filtered = filter === 'all'
+    ? projects
+    : projects.filter((p) => p.status?.toLowerCase() === filter);
+
+  const counts = {
+    all: projects.length,
+    active: projects.filter((p) => p.status?.toLowerCase() === 'active').length,
+    paused: projects.filter((p) => p.status?.toLowerCase() === 'paused').length,
+    archived: projects.filter((p) => p.status?.toLowerCase() === 'archived').length,
+  };
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#0a0a0f' }}>
@@ -195,7 +214,7 @@ export default function ProjectsPage() {
               Projects
             </h1>
             <p style={{ fontSize: '12px', color: '#64748b', margin: '3px 0 0' }}>
-              {projects.length} project{projects.length !== 1 ? 's' : ''} tracked
+              {filtered.length} project{filtered.length !== 1 ? 's' : ''}{filter !== 'all' ? ` · ${filter}` : ' tracked'}
             </p>
           </div>
           <button
@@ -227,6 +246,56 @@ export default function ProjectsPage() {
             </div>
           )}
 
+          {/* Status filter tabs */}
+          {!loading && projects.length > 0 && (
+            <div
+              style={{ display: 'flex', gap: '6px', marginBottom: '24px' }}
+              role="tablist"
+              aria-label="Filter projects by status"
+            >
+              {FILTERS.map(({ value, label }) => {
+                const active = filter === value;
+                const ss = value !== 'all' ? statusStyle(value) : null;
+                return (
+                  <button
+                    key={value}
+                    role="tab"
+                    aria-selected={active}
+                    data-filter={value}
+                    onClick={() => setFilter(value)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '6px',
+                      padding: '6px 14px', borderRadius: '20px', fontFamily: 'inherit',
+                      fontSize: '12px', fontWeight: 600, cursor: 'pointer',
+                      transition: 'all 150ms ease',
+                      background: active
+                        ? (ss ? ss.bg : 'rgba(124,58,237,0.15)')
+                        : 'rgba(255,255,255,0.03)',
+                      color: active
+                        ? (ss ? ss.color : '#a78bfa')
+                        : '#475569',
+                      border: active
+                        ? `1px solid ${ss ? ss.border : 'rgba(124,58,237,0.3)'}`
+                        : '1px solid rgba(255,255,255,0.06)',
+                    }}
+                  >
+                    {label}
+                    <span style={{
+                      fontSize: '10px', fontWeight: 700,
+                      padding: '1px 6px', borderRadius: '10px',
+                      background: active
+                        ? 'rgba(255,255,255,0.15)'
+                        : 'rgba(255,255,255,0.05)',
+                      color: active ? (ss ? ss.color : '#a78bfa') : '#334155',
+                    }}>
+                      {counts[value]}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
           {loading ? (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
               {[1, 2, 3].map((i) => (
@@ -237,17 +306,31 @@ export default function ProjectsPage() {
                 }} />
               ))}
             </div>
-          ) : projects.length === 0 ? (
+          ) : filtered.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '60px 0' }}>
               <FolderOpen size={40} color="#1e2535" style={{ margin: '0 auto 12px', display: 'block' }} />
-              <p style={{ fontSize: '14px', color: '#334155', margin: 0 }}>No projects found</p>
-              <p style={{ fontSize: '12px', color: '#1e293b', margin: '4px 0 0' }}>
-                Add a directory to <code style={{ fontFamily: 'monospace' }}>/home/beniben/sona-workspace/projects/</code>
+              <p style={{ fontSize: '14px', color: '#334155', margin: 0 }}>
+                {filter !== 'all' ? `No ${filter} projects` : 'No projects found'}
               </p>
+              {filter !== 'all' ? (
+                <button
+                  onClick={() => setFilter('all')}
+                  style={{
+                    marginTop: '8px', fontSize: '12px', color: '#a78bfa',
+                    background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                  }}
+                >
+                  Show all projects
+                </button>
+              ) : (
+                <p style={{ fontSize: '12px', color: '#1e293b', margin: '4px 0 0' }}>
+                  Add a directory to <code style={{ fontFamily: 'monospace' }}>/home/beniben/sona-workspace/projects/</code>
+                </p>
+              )}
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
-              {projects.map((p) => (
+              {filtered.map((p) => (
                 <ProjectCard key={p.id} project={p} />
               ))}
             </div>

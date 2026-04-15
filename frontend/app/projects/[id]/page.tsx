@@ -16,6 +16,8 @@ import {
   X,
   Pencil,
   Loader2,
+  Calendar,
+  Target,
 } from 'lucide-react';
 
 interface Service {
@@ -42,6 +44,15 @@ interface BacklogItem {
   checked: boolean;
 }
 
+interface Sprint {
+  id: string;
+  name: string;
+  goal: string;
+  startDate: string;
+  endDate: string;
+  status: 'planning' | 'active' | 'completed';
+}
+
 function statusStyle(status: string) {
   switch (status?.toLowerCase()) {
     case 'active': return { color: '#4ade80', bg: 'rgba(34,197,94,0.1)', border: 'rgba(34,197,94,0.25)' };
@@ -50,6 +61,39 @@ function statusStyle(status: string) {
     default: return { color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', border: 'rgba(148,163,184,0.2)' };
   }
 }
+
+function sprintStatusStyle(status: string) {
+  switch (status) {
+    case 'active': return { color: '#4ade80', bg: 'rgba(34,197,94,0.1)', border: 'rgba(34,197,94,0.25)' };
+    case 'planning': return { color: '#fbbf24', bg: 'rgba(251,191,36,0.1)', border: 'rgba(251,191,36,0.25)' };
+    case 'completed': return { color: '#94a3b8', bg: 'rgba(71,85,105,0.1)', border: 'rgba(71,85,105,0.25)' };
+    default: return { color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', border: 'rgba(148,163,184,0.2)' };
+  }
+}
+
+const inputStyle: React.CSSProperties = {
+  fontSize: '13px', padding: '8px 10px',
+  background: 'rgba(255,255,255,0.04)',
+  border: '1px solid rgba(255,255,255,0.1)',
+  borderRadius: '8px', color: '#e2e8f0',
+  outline: 'none', fontFamily: 'inherit', width: '100%', boxSizing: 'border-box',
+};
+
+const ghostBtnStyle: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: '5px',
+  padding: '6px 12px', borderRadius: '8px',
+  background: 'transparent', border: '1px solid rgba(255,255,255,0.1)',
+  color: '#64748b', fontSize: '12px', fontWeight: 600,
+  cursor: 'pointer', fontFamily: 'inherit',
+};
+
+const primaryBtnStyle: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', gap: '5px',
+  padding: '6px 12px', borderRadius: '8px',
+  background: 'rgba(124,58,237,0.15)', border: '1px solid rgba(124,58,237,0.3)',
+  color: '#a78bfa', fontSize: '12px', fontWeight: 600,
+  cursor: 'pointer', fontFamily: 'inherit',
+};
 
 function BacklogItemRow({
   item,
@@ -161,6 +205,145 @@ function BacklogItemRow({
   );
 }
 
+function SprintRow({
+  sprint,
+  onUpdate,
+  onDelete,
+}: {
+  sprint: Sprint;
+  onUpdate: (id: string, patch: Partial<Sprint>) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Sprint>({ ...sprint });
+  const [saving, setSaving] = useState(false);
+
+  const ss = sprintStatusStyle(sprint.status);
+
+  const commitEdit = async () => {
+    setSaving(true);
+    await onUpdate(sprint.id, draft);
+    setSaving(false);
+    setEditing(false);
+  };
+
+  const cancelEdit = () => {
+    setDraft({ ...sprint });
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div style={{
+        padding: '14px', borderRadius: '10px',
+        background: 'rgba(124,58,237,0.06)',
+        border: '1px solid rgba(124,58,237,0.25)',
+        marginBottom: '8px',
+      }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <input
+            value={draft.name}
+            onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+            placeholder="Sprint name"
+            style={inputStyle}
+          />
+          <input
+            value={draft.goal}
+            onChange={(e) => setDraft((d) => ({ ...d, goal: e.target.value }))}
+            placeholder="Goal"
+            style={inputStyle}
+          />
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <input
+              type="date"
+              value={draft.startDate}
+              onChange={(e) => setDraft((d) => ({ ...d, startDate: e.target.value }))}
+              style={{ ...inputStyle, flex: 1 }}
+            />
+            <input
+              type="date"
+              value={draft.endDate}
+              onChange={(e) => setDraft((d) => ({ ...d, endDate: e.target.value }))}
+              style={{ ...inputStyle, flex: 1 }}
+            />
+            <select
+              value={draft.status}
+              onChange={(e) => setDraft((d) => ({ ...d, status: e.target.value as Sprint['status'] }))}
+              style={{ ...inputStyle, flex: 1 }}
+            >
+              <option value="planning">Planning</option>
+              <option value="active">Active</option>
+              <option value="completed">Completed</option>
+            </select>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+            <button onClick={cancelEdit} style={ghostBtnStyle}>Cancel</button>
+            <button onClick={commitEdit} disabled={saving} style={primaryBtnStyle}>
+              {saving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'flex-start', gap: '12px',
+      padding: '12px 14px', borderRadius: '10px',
+      background: 'rgba(255,255,255,0.025)',
+      border: '1px solid rgba(255,255,255,0.07)',
+      marginBottom: '8px',
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '13px', fontWeight: 600, color: '#e2e8f0' }}>{sprint.name}</span>
+          <span style={{
+            fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '20px',
+            background: ss.bg, color: ss.color, border: `1px solid ${ss.border}`,
+            textTransform: 'uppercase', letterSpacing: '0.05em',
+          }}>
+            {sprint.status}
+          </span>
+        </div>
+        {sprint.goal && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '4px' }}>
+            <Target size={11} color="#64748b" />
+            <span style={{ fontSize: '12px', color: '#64748b', lineHeight: 1.4 }}>{sprint.goal}</span>
+          </div>
+        )}
+        {(sprint.startDate || sprint.endDate) && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <Calendar size={11} color="#475569" />
+            <span style={{ fontSize: '11px', color: '#475569' }}>
+              {sprint.startDate || '?'} → {sprint.endDate || '?'}
+            </span>
+          </div>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+        <button
+          onClick={() => setEditing(true)}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#334155', padding: '4px', borderRadius: '6px', transition: 'color 150ms' }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = '#a78bfa')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = '#334155')}
+        >
+          <Pencil size={13} />
+        </button>
+        <button
+          onClick={() => onDelete(sprint.id)}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#334155', padding: '4px', borderRadius: '6px', transition: 'color 150ms' }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = '#f87171')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = '#334155')}
+        >
+          <X size={13} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function ProjectDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id ? decodeURIComponent(params.id) : '';
@@ -172,6 +355,19 @@ export default function ProjectDetailPage() {
   const [saving, setSaving] = useState(false);
   const [newItemText, setNewItemText] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  // Brief state
+  const [brief, setBrief] = useState('');
+  const [briefEditing, setBriefEditing] = useState(false);
+  const [briefDraft, setBriefDraft] = useState('');
+  const [briefSaving, setBriefSaving] = useState(false);
+
+  // Sprints state
+  const [sprints, setSprints] = useState<Sprint[]>([]);
+  const [newSprint, setNewSprint] = useState<Omit<Sprint, 'id'>>({
+    name: '', goal: '', startDate: '', endDate: '', status: 'planning',
+  });
+  const [sprintSaving, setSprintSaving] = useState(false);
 
   const fetchProject = useCallback(async () => {
     try {
@@ -200,10 +396,32 @@ export default function ProjectDetailPage() {
     }
   }, [id]);
 
+  const fetchBrief = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/brief`);
+      const data = await res.json() as { content: string };
+      setBrief(data.content ?? '');
+    } catch {
+      setBrief('');
+    }
+  }, [id]);
+
+  const fetchSprints = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/sprints`);
+      const data = await res.json() as { sprints: Sprint[] };
+      setSprints(data.sprints ?? []);
+    } catch {
+      setSprints([]);
+    }
+  }, [id]);
+
   useEffect(() => {
     fetchProject();
     fetchBacklog();
-  }, [fetchProject, fetchBacklog]);
+    fetchBrief();
+    fetchSprints();
+  }, [fetchProject, fetchBacklog, fetchBrief, fetchSprints]);
 
   const handleToggle = async (item: BacklogItem) => {
     setSaving(true);
@@ -259,9 +477,63 @@ export default function ProjectDetailPage() {
     }
   };
 
+  const handleBriefSave = async () => {
+    setBriefSaving(true);
+    try {
+      await fetch(`/api/projects/${encodeURIComponent(id)}/brief`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: briefDraft }),
+      });
+      setBrief(briefDraft);
+      setBriefEditing(false);
+    } finally {
+      setBriefSaving(false);
+    }
+  };
+
+  const handleAddSprint = async () => {
+    if (!newSprint.name.trim()) return;
+    setSprintSaving(true);
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/sprints`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newSprint),
+      });
+      const data = await res.json() as { sprints: Sprint[] };
+      setSprints(data.sprints);
+      setNewSprint({ name: '', goal: '', startDate: '', endDate: '', status: 'planning' });
+    } finally {
+      setSprintSaving(false);
+    }
+  };
+
+  const handleUpdateSprint = async (sprintId: string, patch: Partial<Sprint>) => {
+    const res = await fetch(`/api/projects/${encodeURIComponent(id)}/sprints/${sprintId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    const data = await res.json() as { sprints: Sprint[] };
+    setSprints(data.sprints);
+  };
+
+  const handleDeleteSprint = async (sprintId: string) => {
+    const res = await fetch(`/api/projects/${encodeURIComponent(id)}/sprints/${sprintId}`, {
+      method: 'DELETE',
+    });
+    const data = await res.json() as { sprints: Sprint[] };
+    setSprints(data.sprints);
+  };
+
   const open = items.filter((i) => !i.checked);
   const done = items.filter((i) => i.checked);
   const ss = project ? statusStyle(project.status) : statusStyle('active');
+
+  const planningCount = sprints.filter((s) => s.status === 'planning').length;
+  const activeCount = sprints.filter((s) => s.status === 'active').length;
+  const completedCount = sprints.filter((s) => s.status === 'completed').length;
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh', background: '#0a0a0f' }}>
@@ -382,6 +654,163 @@ export default function ProjectDetailPage() {
               </div>
             </div>
           )}
+
+          {/* Brief */}
+          <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+              <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Brief</h2>
+              {!briefEditing && (
+                <button
+                  onClick={() => { setBriefDraft(brief); setBriefEditing(true); }}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: '#334155', padding: '4px 8px', borderRadius: '6px',
+                    display: 'flex', alignItems: 'center', gap: '4px',
+                    fontSize: '11px', transition: 'color 150ms',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#a78bfa')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = '#334155')}
+                >
+                  <Pencil size={13} />
+                  Edit
+                </button>
+              )}
+            </div>
+
+            {briefEditing ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <textarea
+                  value={briefDraft}
+                  onChange={(e) => setBriefDraft(e.target.value)}
+                  placeholder="Write a brief overview of this project and its goals…"
+                  style={{
+                    width: '100%', minHeight: '120px', fontSize: '13px', lineHeight: 1.6,
+                    padding: '10px 12px', background: 'rgba(255,255,255,0.04)',
+                    border: '1px solid rgba(124,58,237,0.4)',
+                    borderRadius: '10px', color: '#e2e8f0',
+                    outline: 'none', fontFamily: 'inherit', resize: 'vertical',
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                  <button
+                    onClick={() => { setBriefEditing(false); setBriefDraft(brief); }}
+                    style={ghostBtnStyle}
+                  >
+                    Cancel
+                  </button>
+                  <button onClick={handleBriefSave} disabled={briefSaving} style={primaryBtnStyle}>
+                    {briefSaving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                    Save
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div style={{
+                fontSize: '13px', lineHeight: 1.7, color: brief ? '#cbd5e1' : '#334155',
+                whiteSpace: 'pre-wrap',
+              }}>
+                {brief || 'No brief yet — click edit to add one.'}
+              </div>
+            )}
+          </div>
+
+          {/* Sprints */}
+          <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Sprints</h2>
+                {sprintSaving && <Loader2 size={13} color="#a78bfa" className="animate-spin" />}
+              </div>
+              <div style={{ display: 'flex', gap: '10px', fontSize: '11px', color: '#475569' }}>
+                {activeCount > 0 && <span style={{ color: '#4ade80' }}>{activeCount} active</span>}
+                {planningCount > 0 && <span style={{ color: '#fbbf24' }}>{planningCount} planning</span>}
+                {completedCount > 0 && <span>{completedCount} completed</span>}
+              </div>
+            </div>
+
+            {/* Add sprint form */}
+            <div style={{
+              padding: '14px', borderRadius: '10px',
+              background: 'rgba(255,255,255,0.02)',
+              border: '1px solid rgba(255,255,255,0.06)',
+              marginBottom: '16px',
+            }}>
+              <div style={{ fontSize: '11px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>
+                Add Sprint
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    value={newSprint.name}
+                    onChange={(e) => setNewSprint((s) => ({ ...s, name: e.target.value }))}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddSprint()}
+                    placeholder="Sprint name"
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <input
+                    value={newSprint.goal}
+                    onChange={(e) => setNewSprint((s) => ({ ...s, goal: e.target.value }))}
+                    placeholder="Goal (optional)"
+                    style={{ ...inputStyle, flex: 2 }}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input
+                    type="date"
+                    value={newSprint.startDate}
+                    onChange={(e) => setNewSprint((s) => ({ ...s, startDate: e.target.value }))}
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <input
+                    type="date"
+                    value={newSprint.endDate}
+                    onChange={(e) => setNewSprint((s) => ({ ...s, endDate: e.target.value }))}
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <select
+                    value={newSprint.status}
+                    onChange={(e) => setNewSprint((s) => ({ ...s, status: e.target.value as Sprint['status'] }))}
+                    style={{ ...inputStyle, flex: 1 }}
+                  >
+                    <option value="planning">Planning</option>
+                    <option value="active">Active</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                  <button
+                    onClick={handleAddSprint}
+                    disabled={sprintSaving || !newSprint.name.trim()}
+                    style={{
+                      ...primaryBtnStyle,
+                      opacity: (sprintSaving || !newSprint.name.trim()) ? 0.5 : 1,
+                      cursor: (sprintSaving || !newSprint.name.trim()) ? 'not-allowed' : 'pointer',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Plus size={14} />
+                    Add
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {sprints.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '20px 0', color: '#334155', fontSize: '13px' }}>
+                No sprints yet. Add one above.
+              </div>
+            ) : (
+              <div>
+                {sprints.map((sprint) => (
+                  <SprintRow
+                    key={sprint.id}
+                    sprint={sprint}
+                    onUpdate={handleUpdateSprint}
+                    onDelete={handleDeleteSprint}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Backlog */}
           <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
