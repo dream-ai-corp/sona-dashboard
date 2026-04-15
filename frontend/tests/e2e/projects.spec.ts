@@ -152,9 +152,9 @@ test.describe("Projects page", () => {
       await firstCard.click();
       await page.waitForLoadState("networkidle");
       // Should show either "N jobs" count or "No jobs found"
-      const jobCount = page.locator("text=/\\d+ jobs?/");
-      const emptyMsg = page.locator("text=No jobs found for this project.");
-      await expect(jobCount.or(emptyMsg)).toBeVisible({ timeout: 10000 });
+      const jobCount = page.locator("text=/\\d+ jobs?/").first();
+      const emptyMsg = page.locator("text=No jobs found for this project.").first();
+      await expect(jobCount.or(emptyMsg).first()).toBeVisible({ timeout: 10000 });
     } else {
       test.skip();
     }
