@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { parseBacklog } from '@/lib/backlog';
+import { parseBacklog, parseBacklogSections } from '@/lib/backlog';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,7 +61,7 @@ export async function PATCH(
 
     const newContent = lines.join('\n');
     fs.writeFileSync(filePath, newContent, 'utf-8');
-    return Response.json({ ok: true, items: parseBacklog(newContent), raw: newContent });
+    return Response.json({ ok: true, items: parseBacklog(newContent), sections: parseBacklogSections(newContent), raw: newContent });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'error';
     return Response.json({ error: msg }, { status: 500 });

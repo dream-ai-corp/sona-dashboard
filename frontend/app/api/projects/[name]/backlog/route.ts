@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { parseBacklog } from '@/lib/backlog';
+import { parseBacklog, parseBacklogSections } from '@/lib/backlog';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,11 +24,11 @@ export async function GET(
   }
   const filePath = backlogPath(name);
   if (!fs.existsSync(filePath)) {
-    return Response.json({ items: [], raw: '' });
+    return Response.json({ items: [], sections: [], raw: '' });
   }
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
-    return Response.json({ items: parseBacklog(raw), raw });
+    return Response.json({ items: parseBacklog(raw), sections: parseBacklogSections(raw), raw });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'error';
     return Response.json({ error: msg }, { status: 500 });
@@ -60,7 +60,7 @@ export async function POST(
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, newContent, 'utf-8');
     const raw = fs.readFileSync(filePath, 'utf-8');
-    return Response.json({ ok: true, items: parseBacklog(raw), raw });
+    return Response.json({ ok: true, items: parseBacklog(raw), sections: parseBacklogSections(raw), raw });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'error';
     return Response.json({ error: msg }, { status: 500 });

@@ -48,6 +48,12 @@ interface BacklogItem {
   checked: boolean;
 }
 
+interface BacklogSection {
+  header: string | null;
+  level: number;
+  items: BacklogItem[];
+}
+
 interface Sprint {
   id: string;
   name: string;
@@ -108,6 +114,39 @@ const primaryBtnStyle: React.CSSProperties = {
   color: '#a78bfa', fontSize: '12px', fontWeight: 600,
   cursor: 'pointer', fontFamily: 'inherit',
 };
+
+function BacklogHeader({ header, level }: { header: string; level: number }) {
+  return (
+    <div
+      data-testid="backlog-section-header"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        marginBottom: '10px',
+        marginTop: '4px',
+        borderLeft: level === 2
+          ? '2px solid rgba(124,58,237,0.5)'
+          : level === 3
+          ? '2px solid rgba(6,182,212,0.4)'
+          : 'none',
+        paddingLeft: level >= 2 ? '10px' : '0',
+      }}
+    >
+      <span
+        style={{
+          fontSize: level === 1 ? '14px' : level === 2 ? '13px' : '12px',
+          fontWeight: 700,
+          color: level === 1 ? '#e2e8f0' : level === 2 ? '#a78bfa' : '#67e8f9',
+          letterSpacing: '0.02em',
+          lineHeight: 1.3,
+        }}
+      >
+        {header}
+      </span>
+    </div>
+  );
+}
 
 function BacklogItemRow({
   item,
@@ -364,6 +403,7 @@ export default function ProjectDetailPage() {
 
   const [project, setProject] = useState<Project | null>(null);
   const [items, setItems] = useState<BacklogItem[]>([]);
+  const [sections, setSections] = useState<BacklogSection[]>([]);
   const [loadingProject, setLoadingProject] = useState(true);
   const [loadingBacklog, setLoadingBacklog] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -409,9 +449,10 @@ export default function ProjectDetailPage() {
     setLoadingBacklog(true);
     try {
       const res = await fetch(`/api/projects/${encodeURIComponent(id)}/backlog`);
-      const data = await res.json() as { items?: BacklogItem[]; error?: string };
+      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; error?: string };
       if (data.error) throw new Error(data.error);
       setItems(data.items ?? []);
+      setSections(data.sections ?? []);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load backlog');
     } finally {
@@ -471,8 +512,9 @@ export default function ProjectDetailPage() {
           body: JSON.stringify({ checked: !item.checked }),
         },
       );
-      const data = await res.json() as { items?: BacklogItem[] };
+      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
       if (data.items) setItems(data.items);
+      if (data.sections) setSections(data.sections);
     } finally {
       setSaving(false);
     }
@@ -489,8 +531,9 @@ export default function ProjectDetailPage() {
           body: JSON.stringify({ text }),
         },
       );
-      const data = await res.json() as { items?: BacklogItem[] };
+      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
       if (data.items) setItems(data.items);
+      if (data.sections) setSections(data.sections);
     } finally {
       setSaving(false);
     }
@@ -506,8 +549,9 @@ export default function ProjectDetailPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       });
-      const data = await res.json() as { items?: BacklogItem[] };
+      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
       if (data.items) setItems(data.items);
+      if (data.sections) setSections(data.sections);
       setNewItemText('');
     } finally {
       setSaving(false);
@@ -994,9 +1038,60 @@ export default function ProjectDetailPage() {
               <div style={{ textAlign: 'center', padding: '24px 0', color: '#334155', fontSize: '13px' }}>
                 No backlog items yet. Add one above.
               </div>
+            ) : sections.length > 0 ? (
+              <div>
+                {sections.map((section, si) => {
+                  const sOpen = section.items.filter((i) => !i.checked);
+                  const sDone = section.items.filter((i) => i.checked);
+                  return (
+                    <div key={si} style={{ marginBottom: si < sections.length - 1 ? '20px' : 0 }}>
+                      {section.header !== null && (
+                        <BacklogHeader header={section.header} level={section.level} />
+                      )}
+                      {sOpen.length > 0 && (
+                        <div style={{ marginBottom: sDone.length > 0 ? '10px' : 0 }}>
+                          <div style={{ fontSize: '11px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                            Open · {sOpen.length}
+                          </div>
+                          {sOpen.map((item) => (
+                            <BacklogItemRow
+                              key={item.index}
+                              item={item}
+                              onToggle={handleToggle}
+                              onEdit={handleEdit}
+                              saving={saving}
+                            />
+                          ))}
+                        </div>
+                      )}
+                      {sDone.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: '11px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
+                            Done · {sDone.length}
+                          </div>
+                          {sDone.map((item) => (
+                            <BacklogItemRow
+                              key={item.index}
+                              item={item}
+                              onToggle={handleToggle}
+                              onEdit={handleEdit}
+                              saving={saving}
+                            />
+                          ))}
+                        </div>
+                      )}
+                      {section.items.length === 0 && section.header !== null && (
+                        <div style={{ fontSize: '12px', color: '#334155', paddingLeft: '4px' }}>
+                          No items in this section.
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             ) : (
               <div>
-                {/* Open items */}
+                {/* Fallback: flat open/done when no sections data */}
                 {open.length > 0 && (
                   <div style={{ marginBottom: '16px' }}>
                     <div style={{ fontSize: '11px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
@@ -1013,8 +1108,6 @@ export default function ProjectDetailPage() {
                     ))}
                   </div>
                 )}
-
-                {/* Done items */}
                 {done.length > 0 && (
                   <div>
                     <div style={{ fontSize: '11px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
