@@ -175,28 +175,14 @@ export default function Home() {
   const fetchSystem = useCallback(async () => {
     setLoading(true);
     try {
-      const apiUrl = typeof window !== 'undefined'
-        ? (process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://72.60.185.57:8080')
-        : '';
-
       const sysRes = await fetch('/api/system').then(r => r.json()).catch(() => null);
       if (sysRes && !sysRes.error) setDaemon(sysRes);
-
-      if (apiUrl) {
-        Promise.allSettled([
-          fetch(`${apiUrl}/api/brain`).then(r => r.json()),
-          fetch(`${apiUrl}/api/voice`).then(r => r.json()),
-        ]).then(([b, v]) => {
-          if (b.status === 'fulfilled') setBrain(b.value?.mode ?? b.value?.brain ?? 'n/a');
-          if (v.status === 'fulfilled') setVoice(v.value?.language ?? v.value?.voice ?? 'n/a');
-        });
-      }
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // SSE: real-time job updates — no polling
+  // SSE: real-time job updates via /api/jobs/stream
   useEffect(() => {
     let es: EventSource | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -219,7 +205,37 @@ export default function Home() {
     return () => { es?.close(); if (retryTimer) clearTimeout(retryTimer); };
   }, []);
 
-  // System / brain / voice: load once on mount
+  // SSE: real-time daemon / brain / voice updates via /api/stream
+  useEffect(() => {
+    let es: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const connect = () => {
+      es = new EventSource('/api/stream');
+      es.addEventListener('daemon', (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          setDaemon({ enabled: d.enabled, running: d.enabled, lastTick: d.lastTickAt, intervalMs: (d.intervalSec ?? 180) * 1000, maxConcurrent: d.maxConcurrent });
+        } catch { /* ignore */ }
+      });
+      es.addEventListener('brain', (e) => {
+        try { setBrain(JSON.parse(e.data)?.mode ?? 'n/a'); } catch { /* ignore */ }
+      });
+      es.addEventListener('voice', (e) => {
+        try {
+          const v = JSON.parse(e.data);
+          setVoice(v?.language ?? v?.voice ?? v?.en ?? 'en');
+        } catch { /* ignore */ }
+      });
+      es.onerror = () => {
+        es?.close(); es = null;
+        retryTimer = setTimeout(connect, 5000);
+      };
+    };
+    connect();
+    return () => { es?.close(); if (retryTimer) clearTimeout(retryTimer); };
+  }, []);
+
+  // System: load once on mount as fallback for daemon state
   const fetchData = useCallback(() => fetchSystem(), [fetchSystem]);
   useEffect(() => { fetchSystem(); }, [fetchSystem]);
 

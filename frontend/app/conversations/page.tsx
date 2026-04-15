@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import PageShell from '@/components/PageShell';
 import { MessageSquare, RefreshCw, Trash2 } from 'lucide-react';
 
@@ -30,11 +30,55 @@ function formatDate(ts: number): string {
 
 export default function ConversationsPage() {
   const [rows, setRows] = useState<ConversationRow[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const esRef = useRef<EventSource | null>(null);
 
-  const fetchData = useCallback(async () => {
+  const connectSSE = useCallback(() => {
+    if (esRef.current) {
+      esRef.current.close();
+    }
+
+    const es = new EventSource('/api/conversations/stream');
+    esRef.current = es;
+
+    es.onopen = () => {
+      setConnected(true);
+      setError(null);
+    };
+
+    es.onmessage = (evt) => {
+      try {
+        const data = JSON.parse(evt.data);
+        if (Array.isArray(data)) {
+          setRows(data);
+          setLoading(false);
+        }
+      } catch {
+        // ignore malformed frames
+      }
+    };
+
+    es.onerror = () => {
+      setConnected(false);
+      es.close();
+      esRef.current = null;
+      // Reconnect after 3 seconds
+      setTimeout(connectSSE, 3000);
+    };
+  }, []);
+
+  useEffect(() => {
+    connectSSE();
+    return () => {
+      esRef.current?.close();
+      esRef.current = null;
+    };
+  }, [connectSSE]);
+
+  const handleManualRefresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -48,24 +92,6 @@ export default function ConversationsPage() {
       setLoading(false);
     }
   }, []);
-
-  // Silent background poll — no loading spinner, no error flash
-  const silentFetch = useCallback(async () => {
-    try {
-      const res = await fetch('/api/conversations', { cache: 'no-store' });
-      if (!res.ok) return;
-      const data = await res.json();
-      setRows(Array.isArray(data) ? data : []);
-    } catch {
-      // ignore — don't surface transient poll errors in the UI
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(silentFetch, 5000);
-    return () => clearInterval(interval);
-  }, [fetchData, silentFetch]);
 
   const handleClear = async () => {
     if (!confirm('Clear all conversations? This cannot be undone.')) return;
@@ -104,7 +130,10 @@ export default function ConversationsPage() {
         <div>
           <h1 style={{ fontSize: '22px', fontWeight: 700, color: '#f1f5f9', margin: 0 }}>Conversations</h1>
           <p style={{ fontSize: '12px', color: '#64748b', margin: '3px 0 0' }}>
-            {rows.length} message{rows.length !== 1 ? 's' : ''} · persisted in SQLite
+            {rows.length} message{rows.length !== 1 ? 's' : ''} · persisted in SQLite ·{' '}
+            <span style={{ color: connected ? '#4ade80' : '#f87171' }}>
+              {connected ? 'live' : 'reconnecting…'}
+            </span>
           </p>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
@@ -125,7 +154,7 @@ export default function ConversationsPage() {
             </button>
           )}
           <button
-            onClick={fetchData}
+            onClick={handleManualRefresh}
             disabled={loading}
             style={{
               display: 'flex', alignItems: 'center', gap: '6px',

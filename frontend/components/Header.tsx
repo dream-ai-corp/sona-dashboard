@@ -23,8 +23,8 @@ export default function Header() {
       try {
         const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://72.60.185.57:8080';
         const [b, v] = await Promise.all([
-          fetch(`${apiUrl}/api/brain`).then(r => r.json()),
-          fetch(`${apiUrl}/api/voice`).then(r => r.json()),
+          fetch(`${apiUrl}/api/config/brain`).then(r => r.json()),
+          fetch(`${apiUrl}/api/config/voice`).then(r => r.json()),
         ]);
         setBrain(b?.mode ?? b?.brain ?? JSON.stringify(b));
         setVoice(v?.language ?? v?.voice ?? JSON.stringify(v));

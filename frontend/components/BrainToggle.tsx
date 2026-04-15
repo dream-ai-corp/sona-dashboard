@@ -1,5 +1,8 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useSSE } from '@/lib/useSSE';
+
+interface StatusPayload { daemon?: any; brain?: any; voice?: any; }
 
 export default function BrainToggle() {
   const [mode, setMode] = useState<string>('...');
@@ -8,31 +11,25 @@ export default function BrainToggle() {
 
   const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://72.60.185.57:8080';
 
-  const load = async () => {
-    try {
-      const b = await fetch(`${apiUrl}/api/brain`).then(r => r.json());
-      setMode(b?.mode ?? b?.brain ?? JSON.stringify(b));
-    } catch { setMode('err'); }
-  };
-
-  useEffect(() => {
-    load();
-    const id = setInterval(load, 10000);
-    return () => clearInterval(id);
-  }, []);
+  useSSE<StatusPayload>('/api/status/stream', (data) => {
+    if (!data?.brain) return;
+    const b = data.brain;
+    setMode(b?.mode ?? b?.brain ?? JSON.stringify(b));
+  });
 
   const toggle = async () => {
     const next = mode === 'claude_code' ? 'lmstudio' : 'claude_code';
     setLoading(true);
     setMsg('');
     try {
-      await fetch(`${apiUrl}/api/brain`, {
+      await fetch(`${apiUrl}/api/config/brain`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: next }),
       });
       setMsg(`Switched to ${next}`);
-      await load();
+      // The status SSE will push the updated brain mode within 15s; reflect immediately
+      setMode(next);
     } catch (e: any) {
       setMsg(`Error: ${e?.message}`);
     }

@@ -25,10 +25,27 @@ interface Job {
   mtime?: number;
 }
 
+interface ContentItem {
+  type?: string;
+  thinking?: string;
+  text?: string;
+  name?: string;
+  input?: Record<string, unknown>;
+  content?: ContentItem[] | string;
+  tool_use_id?: string;
+}
+
 interface LogLine {
   type?: string;
-  message?: { content?: { type?: string; text?: string }[] };
+  message?: { role?: string; content?: ContentItem[] };
   raw?: string;
+}
+
+interface TimelineEntry {
+  kind: 'thought' | 'tool' | 'tool_result' | 'dm' | 'text' | 'final';
+  label: string;
+  content: string;
+  toolName?: string;
 }
 
 function elapsed(startedAt?: string | number): string {
@@ -54,27 +71,151 @@ function statusConfig(status?: string) {
   return { label: status ?? 'Pending', color: '#fbbf24', bg: 'rgba(251,191,36,0.1)', border: 'rgba(251,191,36,0.3)', icon: <Circle size={11} /> };
 }
 
-function extractLogText(lines: LogLine[]): string {
-  return lines
-    .filter((l) => l.type === 'assistant' || l.type === 'tool_result' || l.raw)
-    .map((l) => {
-      if (l.raw) return l.raw;
-      const content = l.message?.content ?? [];
-      return content
-        .filter((c) => c.type === 'text')
-        .map((c) => c.text ?? '')
-        .join('');
-    })
-    .filter(Boolean)
-    .slice(-30)
-    .join('\n');
+const SONA_TOOLS = new Set([
+  'mcp__sona__sona_discord_dm',
+  'mcp__sona__sona_music_control',
+  'mcp__sona__sona_play_youtube',
+  'mcp__sona__sona_remember',
+  'mcp__sona__sona_recall',
+  'mcp__sona__sona_browser_goto',
+  'mcp__sona__sona_browser_click',
+  'mcp__sona__sona_browser_type',
+  'mcp__sona__sona_browser_read',
+  'mcp__sona__sona_host_exec',
+  'mcp__sona__sona_spawn_agent',
+]);
+
+function truncate(s: string, max = 300): string {
+  if (!s) return '';
+  const cleaned = s.replace(/\n+/g, ' ').trim();
+  return cleaned.length > max ? cleaned.slice(0, max) + '…' : cleaned;
+}
+
+function formatToolInput(name: string, input: Record<string, unknown>): string {
+  if (name === 'Bash' || name === 'mcp__sona__sona_host_exec') {
+    return String(input.command ?? input.cmd ?? JSON.stringify(input)).slice(0, 200);
+  }
+  if (name === 'Read') return String(input.file_path ?? '');
+  if (name === 'Edit') return `${input.file_path} — patch`;
+  if (name === 'Write') return String(input.file_path ?? '');
+  if (name === 'Grep') return `/${input.pattern}/ in ${input.path ?? '.'}`;
+  if (name === 'Glob') return String(input.pattern ?? '');
+  if (name === 'mcp__sona__sona_discord_dm') return truncate(String(input.content ?? ''), 200);
+  if (name === 'mcp__sona__sona_host_exec') return truncate(String(input.command ?? ''), 200);
+  return truncate(JSON.stringify(input), 200);
+}
+
+function extractTimeline(lines: LogLine[]): TimelineEntry[] {
+  const entries: TimelineEntry[] = [];
+  let lastTextContent = '';
+
+  for (const line of lines) {
+    if (line.type === 'assistant' && line.message?.content) {
+      for (const item of line.message.content) {
+        if (item.type === 'thinking' && item.thinking) {
+          entries.push({
+            kind: 'thought',
+            label: 'Thought',
+            content: truncate(item.thinking, 300),
+          });
+        } else if (item.type === 'tool_use' && item.name) {
+          const isDM = SONA_TOOLS.has(item.name) && item.name.includes('discord_dm');
+          const isSona = SONA_TOOLS.has(item.name) && !isDM;
+          const inputStr = item.input ? formatToolInput(item.name, item.input) : '';
+          const shortName = item.name.replace('mcp__sona__sona_', '').replace('mcp__sona__', '');
+          entries.push({
+            kind: isDM ? 'dm' : 'tool',
+            label: isDM ? `DM → ${inputStr.slice(0, 60)}` : `${shortName}`,
+            content: isDM ? '' : inputStr,
+            toolName: item.name,
+          });
+        } else if (item.type === 'text' && item.text) {
+          lastTextContent = item.text;
+        }
+      }
+    } else if (line.type === 'user' && line.message?.content) {
+      for (const item of line.message.content) {
+        if (item.type === 'tool_result') {
+          const inner = item.content;
+          let text = '';
+          if (typeof inner === 'string') {
+            text = inner;
+          } else if (Array.isArray(inner)) {
+            text = inner
+              .filter((c) => c.type === 'text')
+              .map((c) => c.text ?? '')
+              .join('\n');
+          }
+          if (text) {
+            entries.push({
+              kind: 'tool_result',
+              label: 'Output',
+              content: truncate(text, 300),
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if (lastTextContent) {
+    entries.push({
+      kind: 'final',
+      label: 'Final response',
+      content: truncate(lastTextContent, 300),
+    });
+  }
+
+  return entries;
+}
+
+const ENTRY_STYLES: Record<string, { icon: string; color: string; bg: string }> = {
+  thought:     { icon: '💭', color: '#94a3b8', bg: 'rgba(148,163,184,0.06)' },
+  tool:        { icon: '🔧', color: '#67e8f9', bg: 'rgba(6,182,212,0.06)'  },
+  tool_result: { icon: '📤', color: '#64748b', bg: 'rgba(100,116,139,0.06)' },
+  dm:          { icon: '📨', color: '#a78bfa', bg: 'rgba(124,58,237,0.08)'  },
+  text:        { icon: '💬', color: '#cbd5e1', bg: 'rgba(203,213,225,0.04)' },
+  final:       { icon: '✅', color: '#4ade80', bg: 'rgba(34,197,94,0.08)'   },
+};
+
+function TimelineView({ entries }: { entries: TimelineEntry[] }) {
+  if (entries.length === 0) return <p style={{ fontSize: '10px', color: '#475569', margin: 0 }}>(empty log)</p>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+      {entries.map((e, i) => {
+        const st = ENTRY_STYLES[e.kind] ?? ENTRY_STYLES.text;
+        return (
+          <div
+            key={i}
+            style={{
+              background: st.bg,
+              borderLeft: `2px solid ${st.color}40`,
+              borderRadius: '4px',
+              padding: '4px 8px',
+              fontSize: '10px',
+              lineHeight: 1.5,
+              fontFamily: 'monospace',
+            }}
+          >
+            <span style={{ color: st.color, fontWeight: 600, marginRight: '6px' }}>
+              {st.icon} {e.label}
+            </span>
+            {e.content && (
+              <span style={{ color: '#64748b' }}>{e.content}</span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function JobCard({ job, onKilled }: { job: Job; onKilled: () => void }) {
   const s = statusConfig(job.status);
   const isRunning = job.status === 'running' || job.status === 'in_progress';
   const [showLogs, setShowLogs] = useState(false);
-  const [logText, setLogText] = useState('');
+  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [logsLoading, setLogsLoading] = useState(false);
   const [killing, setKilling] = useState(false);
 
@@ -86,19 +227,19 @@ function JobCard({ job, onKilled }: { job: Job; onKilled: () => void }) {
       const res = await fetch(`/api/jobs/${job.id}/log`);
       if (res.ok) {
         const data = await res.json();
-        setLogText(extractLogText(data.lines ?? []));
+        setTimeline(extractTimeline(data.lines ?? []));
       } else {
-        setLogText('(log not found)');
+        setTimeline([{ kind: 'text', label: 'Error', content: '(log not found)' }]);
       }
     } catch {
-      setLogText('(error loading log)');
+      setTimeline([{ kind: 'text', label: 'Error', content: '(error loading log)' }]);
     } finally {
       setLogsLoading(false);
     }
   };
 
   const toggleLogs = () => {
-    if (!showLogs && !logText) fetchLogs();
+    if (!showLogs && timeline.length === 0) fetchLogs();
     setShowLogs((v) => !v);
   };
 
@@ -186,16 +327,13 @@ function JobCard({ job, onKilled }: { job: Job; onKilled: () => void }) {
       </div>
 
       {showLogs && (
-        <pre style={{
+        <div style={{
           marginTop: '10px', padding: '10px 12px',
           background: 'rgba(0,0,0,0.3)', borderRadius: '8px',
-          fontSize: '10px', color: '#64748b', lineHeight: 1.6,
-          maxHeight: '200px', overflow: 'auto',
-          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-          fontFamily: 'monospace',
+          maxHeight: '320px', overflow: 'auto',
         }}>
-          {logText || '(empty log)'}
-        </pre>
+          <TimelineView entries={timeline} />
+        </div>
       )}
     </div>
   );
@@ -220,7 +358,6 @@ export default function AgentsPage() {
 
   useEffect(() => {
     fetchJobs();
-    // Subscribe to SSE for live updates
     let es: EventSource | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -229,7 +366,6 @@ export default function AgentsPage() {
       es.onmessage = (e) => {
         try {
           const all: Job[] = JSON.parse(e.data);
-          // Sort: running first, then by mtime desc
           all.sort((a, b) => {
             const aR = a.status === 'running' || a.status === 'in_progress';
             const bR = b.status === 'running' || b.status === 'in_progress';

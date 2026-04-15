@@ -110,8 +110,30 @@ export default function JobsPage() {
 
   useEffect(() => {
     fetchJobs();
-    const id = setInterval(fetchJobs, 5000);
-    return () => clearInterval(id);
+    let es: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      es = new EventSource('/api/jobs/stream');
+      es.onmessage = (e) => {
+        try {
+          const all: Job[] = JSON.parse(e.data);
+          setJobs(all);
+          setLoading(false);
+        } catch { /* ignore parse errors */ }
+      };
+      es.onerror = () => {
+        es?.close();
+        es = null;
+        retryTimer = setTimeout(connect, 3000);
+      };
+    };
+
+    connect();
+    return () => {
+      es?.close();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [fetchJobs]);
 
   const filtered = jobs.filter(j => {
