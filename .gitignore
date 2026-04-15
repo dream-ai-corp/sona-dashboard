@@ -50,3 +50,8 @@ Thumbs.db
 test-results/
 frontend/test-results/
 playwright-report/
+
+# SQLite database
+data/*.db
+data/*.db-shm
+data/*.db-wal

@@ -4,7 +4,7 @@ const BACKEND = process.env.BACKEND_URL ?? 'http://backend:3011';
 
 export async function GET() {
   try {
-    const res = await fetch(`${BACKEND}/api/jobs`, {
+    const res = await fetch(`${BACKEND}/api/agents`, {
       cache: 'no-store',
       signal: AbortSignal.timeout(5000),
     });

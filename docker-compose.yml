@@ -9,11 +9,11 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=http://backend:3011
       - SONA_API_URL=http://host.docker.internal:8080
+      - BACKEND_URL=http://backend:3011
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - /home/beniben/sona-workspace:/home/beniben/sona-workspace
-      - /home/beniben/sona-workspace/sona-dashboard/frontend:/app
     depends_on:
       - backend
     networks:
@@ -28,8 +28,12 @@ services:
     environment:
       - PORT=3011
       - SONA_API_URL=http://host.docker.internal:8080
+      - DB_PATH=/data/sona-dashboard.db
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      - /home/beniben/sona-workspace:/home/beniben/sona-workspace:ro
+      - /home/beniben/sona-workspace/sona-dashboard/data:/data
     networks:
       - sona-net
 

@@ -19,8 +19,9 @@ interface Job {
   id: string;
   goal?: string;
   status?: string;
+  started_at?: string | number;
   startedAt?: string | number;
-  completedAt?: string | number;
+  completed_at?: string | number;
   mtime?: number;
 }
 
@@ -48,6 +49,8 @@ function statusConfig(status?: string) {
     return { label: 'Done', color: '#4ade80', bg: 'rgba(34,197,94,0.1)', border: 'rgba(34,197,94,0.3)', icon: <CheckCircle2 size={11} /> };
   if (s === 'error' || s === 'failed')
     return { label: 'Failed', color: '#f87171', bg: 'rgba(239,68,68,0.1)', border: 'rgba(239,68,68,0.3)', icon: <XCircle size={11} /> };
+  if (s === 'killed')
+    return { label: 'Killed', color: '#fb923c', bg: 'rgba(251,146,60,0.1)', border: 'rgba(251,146,60,0.3)', icon: <Skull size={11} /> };
   return { label: status ?? 'Pending', color: '#fbbf24', bg: 'rgba(251,191,36,0.1)', border: 'rgba(251,191,36,0.3)', icon: <Circle size={11} /> };
 }
 
@@ -74,6 +77,8 @@ function JobCard({ job, onKilled }: { job: Job; onKilled: () => void }) {
   const [logText, setLogText] = useState('');
   const [logsLoading, setLogsLoading] = useState(false);
   const [killing, setKilling] = useState(false);
+
+  const startedAt = job.started_at ?? job.startedAt;
 
   const fetchLogs = async () => {
     setLogsLoading(true);
@@ -141,14 +146,13 @@ function JobCard({ job, onKilled }: { job: Job; onKilled: () => void }) {
       {/* Meta + actions row */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
         <code style={{ fontSize: '10px', color: '#475569', fontFamily: 'monospace' }}>#{job.id?.slice(0, 8)}</code>
-        {job.startedAt && (
+        {startedAt && (
           <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#475569' }}>
-            <Clock size={10} /> {elapsed(job.startedAt)}
+            <Clock size={10} /> {elapsed(startedAt)}
           </span>
         )}
 
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px' }}>
-          {/* Logs button */}
           <button
             onClick={toggleLogs}
             style={{
@@ -162,7 +166,6 @@ function JobCard({ job, onKilled }: { job: Job; onKilled: () => void }) {
             Logs
           </button>
 
-          {/* Kill button — only for running jobs */}
           {isRunning && (
             <button
               onClick={handleKill}
@@ -182,7 +185,6 @@ function JobCard({ job, onKilled }: { job: Job; onKilled: () => void }) {
         </div>
       </div>
 
-      {/* Log expand */}
       {showLogs && (
         <pre style={{
           marginTop: '10px', padding: '10px 12px',
@@ -201,23 +203,15 @@ function JobCard({ job, onKilled }: { job: Job; onKilled: () => void }) {
 
 export default function AgentsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [killingAll, setKillingAll] = useState(false);
 
   const fetchJobs = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/jobs');
+      const res = await fetch('/api/agents');
       const data = await res.json();
       const all: Job[] = Array.isArray(data) ? data : (data?.jobs ?? []);
-      // Sort: running first, then by mtime desc
-      all.sort((a, b) => {
-        const aRunning = a.status === 'running' || a.status === 'in_progress';
-        const bRunning = b.status === 'running' || b.status === 'in_progress';
-        if (aRunning && !bRunning) return -1;
-        if (!aRunning && bRunning) return 1;
-        return (b.mtime ?? 0) - (a.mtime ?? 0);
-      });
       setJobs(all);
     } finally {
       setLoading(false);
@@ -225,27 +219,28 @@ export default function AgentsPage() {
   }, []);
 
   useEffect(() => {
+    fetchJobs();
+    // Subscribe to SSE for live updates
     let es: EventSource | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
     const connect = () => {
       es = new EventSource('/api/jobs/stream');
-
       es.onmessage = (e) => {
         try {
           const all: Job[] = JSON.parse(e.data);
+          // Sort: running first, then by mtime desc
           all.sort((a, b) => {
-            const aRunning = a.status === 'running' || a.status === 'in_progress';
-            const bRunning = b.status === 'running' || b.status === 'in_progress';
-            if (aRunning && !bRunning) return -1;
-            if (!aRunning && bRunning) return 1;
+            const aR = a.status === 'running' || a.status === 'in_progress';
+            const bR = b.status === 'running' || b.status === 'in_progress';
+            if (aR && !bR) return -1;
+            if (!aR && bR) return 1;
             return (b.mtime ?? 0) - (a.mtime ?? 0);
           });
-          setJobs(all.filter((j) => j.status === 'running' || j.status === 'in_progress'));
+          setJobs(all);
           setLoading(false);
         } catch { /* ignore parse errors */ }
       };
-
       es.onerror = () => {
         es?.close();
         es = null;
@@ -254,18 +249,18 @@ export default function AgentsPage() {
     };
 
     connect();
-
     return () => {
       es?.close();
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, []);
+  }, [fetchJobs]);
 
   const handleKillAll = async () => {
     if (!confirm('Kill all running jobs?')) return;
     setKillingAll(true);
     try {
-      await fetch('http://172.17.0.1:8080/api/jobs/killall', { method: 'POST' }).catch(() => {});
+      const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://host.docker.internal:8080';
+      await fetch(`${apiUrl}/api/jobs/killall`, { method: 'POST' }).catch(() => {});
       await fetchJobs();
     } finally {
       setKillingAll(false);
@@ -327,10 +322,15 @@ export default function AgentsPage() {
 
       {/* Body */}
       <div style={{ flex: 1, padding: '28px 32px' }}>
-        {jobs.length === 0 ? (
+        {loading && jobs.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '64px 0' }}>
+            <Loader2 size={32} color="#334155" style={{ margin: '0 auto 12px', display: 'block', animation: 'spin 1s linear infinite' }} />
+            <p style={{ fontSize: '14px', color: '#334155', margin: 0 }}>Loading agents…</p>
+          </div>
+        ) : jobs.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '64px 0' }}>
             <Bot size={40} color="#1e2535" style={{ margin: '0 auto 12px', display: 'block' }} />
-            <p style={{ fontSize: '14px', color: '#334155', margin: 0 }}>No jobs found</p>
+            <p style={{ fontSize: '14px', color: '#334155', margin: 0 }}>No agents found</p>
           </div>
         ) : (
           <div>
