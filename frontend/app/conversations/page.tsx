@@ -49,11 +49,23 @@ export default function ConversationsPage() {
     }
   }, []);
 
+  // Silent background poll — no loading spinner, no error flash
+  const silentFetch = useCallback(async () => {
+    try {
+      const res = await fetch('/api/conversations', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      setRows(Array.isArray(data) ? data : []);
+    } catch {
+      // ignore — don't surface transient poll errors in the UI
+    }
+  }, []);
+
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 4000);
+    const interval = setInterval(silentFetch, 5000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, silentFetch]);
 
   const handleClear = async () => {
     if (!confirm('Clear all conversations? This cannot be undone.')) return;
