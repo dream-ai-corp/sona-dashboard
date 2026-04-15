@@ -8,8 +8,12 @@ services:
       - "3010:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://backend:3011
+      - SONA_API_URL=http://host.docker.internal:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - /home/beniben/sona-workspace:/home/beniben/sona-workspace
+      - /home/beniben/sona-workspace/sona-dashboard/frontend:/app
     depends_on:
       - backend
     networks:

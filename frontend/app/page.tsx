@@ -172,25 +172,16 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  const fetchData = useCallback(async () => {
+  const fetchSystem = useCallback(async () => {
     setLoading(true);
     try {
       const apiUrl = typeof window !== 'undefined'
         ? (process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://72.60.185.57:8080')
         : '';
 
-      const [sysRes, jobsRes] = await Promise.allSettled([
-        fetch('/api/system').then(r => r.json()),
-        fetch('/api/jobs').then(r => r.json()),
-      ]);
+      const sysRes = await fetch('/api/system').then(r => r.json()).catch(() => null);
+      if (sysRes && !sysRes.error) setDaemon(sysRes);
 
-      if (sysRes.status === 'fulfilled') setDaemon(sysRes.value);
-      if (jobsRes.status === 'fulfilled') {
-        const j = jobsRes.value;
-        setJobs(Array.isArray(j) ? j : (j?.jobs ?? []));
-      }
-
-      // Brain + voice direct from sona (best-effort)
       if (apiUrl) {
         Promise.allSettled([
           fetch(`${apiUrl}/api/brain`).then(r => r.json()),
@@ -205,11 +196,32 @@ export default function Home() {
     }
   }, []);
 
+  // SSE: real-time job updates — no polling
   useEffect(() => {
-    fetchData();
-    const id = setInterval(fetchData, 5000);
-    return () => clearInterval(id);
-  }, [fetchData]);
+    let es: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const connect = () => {
+      es = new EventSource('/api/jobs/stream');
+      es.onmessage = (e) => {
+        try {
+          const all: Job[] = JSON.parse(e.data);
+          all.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
+          setJobs(all);
+          setLoading(false);
+        } catch { /* ignore */ }
+      };
+      es.onerror = () => {
+        es?.close(); es = null;
+        retryTimer = setTimeout(connect, 3000);
+      };
+    };
+    connect();
+    return () => { es?.close(); if (retryTimer) clearTimeout(retryTimer); };
+  }, []);
+
+  // System / brain / voice: load once on mount
+  const fetchData = useCallback(() => fetchSystem(), [fetchSystem]);
+  useEffect(() => { fetchSystem(); }, [fetchSystem]);
 
   /* derived stats */
   const running = jobs.filter(j => j.status === 'running' || j.status === 'in_progress');
@@ -526,7 +538,7 @@ export default function Home() {
           padding: '16px',
           borderTop: '1px solid rgba(255,255,255,0.04)',
         }}>
-          Sona Dashboard · auto-refreshes every 5 s · {now}
+          Sona Dashboard · live via SSE · {now}
         </div>
       </main>
     </div>
