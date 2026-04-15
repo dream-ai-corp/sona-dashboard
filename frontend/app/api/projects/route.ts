@@ -3,29 +3,66 @@ import path from 'path';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
-  const apiUrl = process.env.SONA_API_URL ?? 'http://host.docker.internal:8080';
+const PROJECTS_DIR = '/home/beniben/sona-workspace/projects';
+
+interface RawProjectJson {
+  id?: string;
+  name?: string;
+  description?: string;
+  status?: string;
+  tags?: string[];
+  services?: Array<{ name: string; port: number; url?: string; container?: string }>;
+  git?: { remote?: string };
+  path?: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description?: string;
+  status: string;
+  tags?: string[];
+  services?: Array<{ name: string; port: number; url?: string; container?: string }>;
+  git?: { remote?: string };
+  hasBacklog: boolean;
+}
+
+function readProject(id: string, dir: string): Project {
+  const jsonPath = path.join(dir, 'project.json');
+  const hasBacklog = fs.existsSync(path.join(dir, 'backlog.md'));
   try {
-    const res = await fetch(`${apiUrl}/api/projects`, {
-      cache: 'no-store',
-      signal: AbortSignal.timeout(3000),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      return Response.json(data);
+    if (fs.existsSync(jsonPath)) {
+      const raw: RawProjectJson = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+      return {
+        id,
+        name: raw.name ?? id,
+        description: raw.description,
+        status: raw.status ?? 'active',
+        tags: raw.tags,
+        services: raw.services,
+        git: raw.git,
+        hasBacklog,
+      };
     }
   } catch {
-    // fall through to filesystem
+    // ignore parse errors
   }
+  return { id, name: id, status: 'active', hasBacklog };
+}
 
-  // Filesystem fallback
-  const projectsDir = '/home/beniben/sona-workspace/projects';
+export async function GET() {
   try {
-    const entries = fs.readdirSync(projectsDir).filter(
-      (e) => e !== '_archive' && fs.statSync(path.join(projectsDir, e)).isDirectory()
+    const entries = fs
+      .readdirSync(PROJECTS_DIR)
+      .filter(
+        (e) =>
+          e !== '_archive' &&
+          fs.statSync(path.join(PROJECTS_DIR, e)).isDirectory(),
+      );
+    const projects = entries.map((name) =>
+      readProject(name, path.join(PROJECTS_DIR, name)),
     );
-    const projects = entries.map((name) => ({ id: name, name }));
-    return Response.json({ projects, independent: null });
+    return Response.json({ projects });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'error';
     return Response.json({ error: msg }, { status: 500 });

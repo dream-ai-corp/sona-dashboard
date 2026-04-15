@@ -11,18 +11,24 @@ import {
   Settings,
   Zap,
   FolderOpen,
+  FolderKanban,
   ChevronRight,
   ChevronDown,
   Plus,
+  Activity,
+  MessageSquare,
 } from 'lucide-react';
 
 const navItems = [
-  { icon: LayoutDashboard, label: 'Dashboard', route: '/' },
-  { icon: Bot,             label: 'Agents',    route: '/agents' },
-  { icon: Briefcase,       label: 'Jobs',      route: '/jobs' },
-  { icon: Cpu,             label: 'System',    route: '/system' },
-  { icon: Brain,           label: 'Memory',    route: '/memory' },
-  { icon: Settings,        label: 'Settings',  route: '/system' },
+  { icon: LayoutDashboard, label: 'Dashboard',     route: '/' },
+  { icon: Bot,             label: 'Agents',        route: '/agents' },
+  { icon: Briefcase,       label: 'Jobs',          route: '/jobs' },
+  { icon: Activity,        label: 'Activity',      route: '/activity' },
+  { icon: MessageSquare,   label: 'Conversations', route: '/conversations' },
+  { icon: Cpu,             label: 'System',        route: '/system' },
+  { icon: Brain,           label: 'Memory',        route: '/memory' },
+  { icon: FolderKanban,    label: 'Projects',      route: '/projects' },
+  { icon: Settings,        label: 'Settings',      route: '/system' },
 ];
 
 interface Project {
