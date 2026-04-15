@@ -49,7 +49,11 @@ export default function ConversationsPage() {
     }
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 4000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
 
   const handleClear = async () => {
     if (!confirm('Clear all conversations? This cannot be undone.')) return;
