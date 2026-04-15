@@ -1,0 +1,18 @@
+version: '3.8'
+services:
+  sona-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: sona-dashboard
+    ports:
+      - "3010:3000"
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    environment:
+      - SONA_API_URL=http://172.17.0.1:8080
+      - NEXT_PUBLIC_SONA_API_URL=http://72.60.185.57:8080
+      - CHOKIDAR_USEPOLLING=true
+      - WATCHPACK_POLLING=true
+    restart: unless-stopped
