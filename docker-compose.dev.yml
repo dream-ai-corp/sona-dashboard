@@ -7,11 +7,28 @@ services:
     volumes:
       - ./frontend:/app
       - /app/node_modules
+      - /home/beniben/sona-workspace:/home/beniben/sona-workspace
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:3001
+      - NEXT_PUBLIC_API_URL=http://backend:3011
+      - SONA_API_URL=http://host.docker.internal:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - sona-net
 
   backend:
     command: npm run dev
     volumes:
       - ./backend:/app
       - /app/node_modules
+    environment:
+      - PORT=3011
+      - SONA_API_URL=http://host.docker.internal:8080
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - sona-net
+
+networks:
+  sona-net:
+    driver: bridge

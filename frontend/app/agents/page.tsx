@@ -8,9 +8,11 @@ import {
   CheckCircle2,
   XCircle,
   Circle,
-  Zap,
   RefreshCw,
   Clock,
+  ChevronDown,
+  ChevronUp,
+  Skull,
 } from 'lucide-react';
 
 interface Job {
@@ -20,6 +22,12 @@ interface Job {
   startedAt?: string | number;
   completedAt?: string | number;
   mtime?: number;
+}
+
+interface LogLine {
+  type?: string;
+  message?: { content?: { type?: string; text?: string }[] };
+  raw?: string;
 }
 
 function elapsed(startedAt?: string | number): string {
@@ -43,9 +51,63 @@ function statusConfig(status?: string) {
   return { label: status ?? 'Pending', color: '#fbbf24', bg: 'rgba(251,191,36,0.1)', border: 'rgba(251,191,36,0.3)', icon: <Circle size={11} /> };
 }
 
-function JobCard({ job }: { job: Job }) {
+function extractLogText(lines: LogLine[]): string {
+  return lines
+    .filter((l) => l.type === 'assistant' || l.type === 'tool_result' || l.raw)
+    .map((l) => {
+      if (l.raw) return l.raw;
+      const content = l.message?.content ?? [];
+      return content
+        .filter((c) => c.type === 'text')
+        .map((c) => c.text ?? '')
+        .join('');
+    })
+    .filter(Boolean)
+    .slice(-30)
+    .join('\n');
+}
+
+function JobCard({ job, onKilled }: { job: Job; onKilled: () => void }) {
   const s = statusConfig(job.status);
   const isRunning = job.status === 'running' || job.status === 'in_progress';
+  const [showLogs, setShowLogs] = useState(false);
+  const [logText, setLogText] = useState('');
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [killing, setKilling] = useState(false);
+
+  const fetchLogs = async () => {
+    setLogsLoading(true);
+    try {
+      const res = await fetch(`/api/jobs/${job.id}/log`);
+      if (res.ok) {
+        const data = await res.json();
+        setLogText(extractLogText(data.lines ?? []));
+      } else {
+        setLogText('(log not found)');
+      }
+    } catch {
+      setLogText('(error loading log)');
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  const toggleLogs = () => {
+    if (!showLogs && !logText) fetchLogs();
+    setShowLogs((v) => !v);
+  };
+
+  const handleKill = async () => {
+    if (!confirm(`Kill job ${job.id.slice(0, 8)}?`)) return;
+    setKilling(true);
+    try {
+      await fetch(`/api/jobs/${job.id}`, { method: 'DELETE' });
+      onKilled();
+    } finally {
+      setKilling(false);
+    }
+  };
+
   return (
     <div
       className={isRunning ? 'shimmer' : ''}
@@ -57,8 +119,13 @@ function JobCard({ job }: { job: Job }) {
         marginBottom: '10px',
       }}
     >
+      {/* Header row */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '8px' }}>
-        <p style={{ fontSize: '13px', color: '#cbd5e1', lineHeight: 1.5, flex: 1, margin: 0 }}>
+        <p style={{
+          fontSize: '13px', color: '#cbd5e1', lineHeight: 1.5, flex: 1, margin: 0,
+          display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+        }}>
           {job.goal ?? '(no goal)'}
         </p>
         <span style={{
@@ -70,14 +137,64 @@ function JobCard({ job }: { job: Job }) {
           {s.icon} {s.label}
         </span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+
+      {/* Meta + actions row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
         <code style={{ fontSize: '10px', color: '#475569', fontFamily: 'monospace' }}>#{job.id?.slice(0, 8)}</code>
-        {isRunning && job.startedAt && (
-          <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#67e8f9' }}>
+        {job.startedAt && (
+          <span style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', color: '#475569' }}>
             <Clock size={10} /> {elapsed(job.startedAt)}
           </span>
         )}
+
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px' }}>
+          {/* Logs button */}
+          <button
+            onClick={toggleLogs}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '4px',
+              padding: '3px 8px', borderRadius: '6px', fontSize: '11px',
+              border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.04)',
+              color: '#64748b', cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            {logsLoading ? <Loader2 size={10} className="animate-spin" /> : (showLogs ? <ChevronUp size={10} /> : <ChevronDown size={10} />)}
+            Logs
+          </button>
+
+          {/* Kill button — only for running jobs */}
+          {isRunning && (
+            <button
+              onClick={handleKill}
+              disabled={killing}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '4px',
+                padding: '3px 8px', borderRadius: '6px', fontSize: '11px',
+                border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.08)',
+                color: '#f87171', cursor: killing ? 'not-allowed' : 'pointer',
+                opacity: killing ? 0.6 : 1, fontFamily: 'inherit',
+              }}
+            >
+              {killing ? <Loader2 size={10} className="animate-spin" /> : <Skull size={10} />}
+              Kill
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Log expand */}
+      {showLogs && (
+        <pre style={{
+          marginTop: '10px', padding: '10px 12px',
+          background: 'rgba(0,0,0,0.3)', borderRadius: '8px',
+          fontSize: '10px', color: '#64748b', lineHeight: 1.6,
+          maxHeight: '200px', overflow: 'auto',
+          whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          fontFamily: 'monospace',
+        }}>
+          {logText || '(empty log)'}
+        </pre>
+      )}
     </div>
   );
 }
@@ -85,6 +202,7 @@ function JobCard({ job }: { job: Job }) {
 export default function AgentsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
+  const [killingAll, setKillingAll] = useState(false);
 
   const fetchJobs = useCallback(async () => {
     setLoading(true);
@@ -92,7 +210,15 @@ export default function AgentsPage() {
       const res = await fetch('/api/jobs');
       const data = await res.json();
       const all: Job[] = Array.isArray(data) ? data : (data?.jobs ?? []);
-      setJobs(all.filter(j => j.status === 'running' || j.status === 'in_progress'));
+      // Sort: running first, then by mtime desc
+      all.sort((a, b) => {
+        const aRunning = a.status === 'running' || a.status === 'in_progress';
+        const bRunning = b.status === 'running' || b.status === 'in_progress';
+        if (aRunning && !bRunning) return -1;
+        if (!aRunning && bRunning) return 1;
+        return (b.mtime ?? 0) - (a.mtime ?? 0);
+      });
+      setJobs(all);
     } finally {
       setLoading(false);
     }
@@ -104,6 +230,19 @@ export default function AgentsPage() {
     return () => clearInterval(id);
   }, [fetchJobs]);
 
+  const handleKillAll = async () => {
+    if (!confirm('Kill all running jobs?')) return;
+    setKillingAll(true);
+    try {
+      await fetch('http://172.17.0.1:8080/api/jobs/killall', { method: 'POST' }).catch(() => {});
+      await fetchJobs();
+    } finally {
+      setKillingAll(false);
+    }
+  };
+
+  const runningCount = jobs.filter((j) => j.status === 'running' || j.status === 'in_progress').length;
+
   return (
     <PageShell>
       {/* Top bar */}
@@ -114,49 +253,61 @@ export default function AgentsPage() {
         position: 'sticky', top: 0, zIndex: 40,
       }}>
         <div>
-          <h1 style={{ fontSize: '22px', fontWeight: 700, color: '#f1f5f9', margin: 0, lineHeight: 1.2 }}>Active Agents</h1>
-          <p style={{ fontSize: '12px', color: '#64748b', margin: '3px 0 0' }}>Running jobs and agents</p>
+          <h1 style={{ fontSize: '22px', fontWeight: 700, color: '#f1f5f9', margin: 0, lineHeight: 1.2 }}>All Agents</h1>
+          <p style={{ fontSize: '12px', color: '#64748b', margin: '3px 0 0' }}>
+            {runningCount} running · {jobs.length} total
+          </p>
         </div>
-        <button
-          onClick={fetchJobs}
-          disabled={loading}
-          style={{
-            display: 'flex', alignItems: 'center', gap: '6px',
-            padding: '7px 14px', borderRadius: '10px',
-            border: '1px solid rgba(124,58,237,0.3)', background: 'rgba(124,58,237,0.1)',
-            color: '#a78bfa', fontSize: '12px', fontWeight: 600,
-            cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.6 : 1,
-            fontFamily: 'inherit',
-          }}
-        >
-          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          {runningCount > 0 && (
+            <button
+              onClick={handleKillAll}
+              disabled={killingAll}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                padding: '7px 14px', borderRadius: '10px',
+                border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.08)',
+                color: '#f87171', fontSize: '12px', fontWeight: 600,
+                cursor: killingAll ? 'not-allowed' : 'pointer',
+                opacity: killingAll ? 0.6 : 1, fontFamily: 'inherit',
+              }}
+            >
+              {killingAll ? <Loader2 size={13} className="animate-spin" /> : <Skull size={13} />}
+              Kill All Running
+            </button>
+          )}
+          <button
+            onClick={fetchJobs}
+            disabled={loading}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '7px 14px', borderRadius: '10px',
+              border: '1px solid rgba(124,58,237,0.3)', background: 'rgba(124,58,237,0.1)',
+              color: '#a78bfa', fontSize: '12px', fontWeight: 600,
+              cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.6 : 1,
+              fontFamily: 'inherit',
+            }}
+          >
+            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Body */}
       <div style={{ flex: 1, padding: '28px 32px' }}>
-        <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
-            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#67e8f9', boxShadow: '0 0 8px rgba(6,182,212,0.8)' }} className="status-dot-pulse" />
-            <h2 style={{ fontSize: '14px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Running Jobs</h2>
-            <span style={{ marginLeft: 'auto', fontSize: '11px', color: '#475569', background: 'rgba(6,182,212,0.08)', padding: '2px 8px', borderRadius: '20px', border: '1px solid rgba(6,182,212,0.15)' }}>
-              {jobs.length} active
-            </span>
+        {jobs.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '64px 0' }}>
+            <Bot size={40} color="#1e2535" style={{ margin: '0 auto 12px', display: 'block' }} />
+            <p style={{ fontSize: '14px', color: '#334155', margin: 0 }}>No jobs found</p>
           </div>
-
-          {jobs.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '48px 0' }}>
-              <Bot size={40} color="#1e2535" style={{ margin: '0 auto 12px', display: 'block' }} />
-              <p style={{ fontSize: '14px', color: '#334155', margin: 0 }}>No active agents right now</p>
-              <p style={{ fontSize: '12px', color: '#1e293b', margin: '6px 0 0' }}>Agents will appear here when jobs are running</p>
-            </div>
-          ) : (
-            <div>
-              {jobs.map(job => <JobCard key={job.id} job={job} />)}
-            </div>
-          )}
-        </div>
+        ) : (
+          <div>
+            {jobs.map((job) => (
+              <JobCard key={job.id} job={job} onKilled={fetchJobs} />
+            ))}
+          </div>
+        )}
       </div>
     </PageShell>
   );

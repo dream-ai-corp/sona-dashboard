@@ -7,7 +7,7 @@ services:
     ports:
       - "3010:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:3001
+      - NEXT_PUBLIC_API_URL=http://backend:3011
     depends_on:
       - backend
     networks:
@@ -18,9 +18,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "3001:3001"
+      - "3011:3011"
     environment:
-      - PORT=3001
+      - PORT=3011
       - SONA_API_URL=http://host.docker.internal:8080
     extra_hosts:
       - "host.docker.internal:host-gateway"
