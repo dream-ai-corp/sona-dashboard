@@ -1,0 +1,522 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum LifeArea {
+  SANTE
+  AMOUR_ET_COUPLE
+  CARRIERE
+  FINANCES
+  LOISIRS
+  DEVELOPPEMENT_PERSONNEL
+  FAMILLE_ET_AMIS
+  ENVIRONNEMENT
+  ORGANISATION
+  ADMINISTRATIF
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+}
+
+enum RecurrenceType {
+  DAILY
+  WEEKLY
+  MONTHLY
+  YEARLY
+  CUSTOM
+}
+
+enum TransactionStatus {
+  REALIZED
+  SCHEDULED
+}
+
+enum ObjectiveStatus {
+  ACTIVE
+  COMPLETED
+  PAUSED
+}
+
+enum ShoppingListStatus {
+  DRAFT
+  ACTIVE
+  COMPLETED
+}
+
+enum MealType {
+  BREAKFAST
+  LUNCH
+  DINNER
+  SNACK
+}
+
+enum RoutineStepKind {
+  SILENCE
+  AFFIRMATIONS
+  VISUALIZATION
+  EXERCISE
+  READING
+  SCRIBING
+  MEDITATION
+  WORKOUT
+  BREATHING
+  STRETCHING
+  CUSTOM
+}
+
+enum RoutineStepMediaKind {
+  VIDEO
+  AUDIO
+  DOCUMENT
+  LINK
+}
+
+// ==================== USER SETTINGS ====================
+
+model UserSettings {
+  id                  String   @id @default(uuid())
+  userId              String   @unique @map("user_id")
+  googleClientId      String?  @map("google_client_id")
+  googleClientSecret  String?  @map("google_client_secret")
+  googleRedirectUri   String?  @map("google_redirect_uri")
+  openrouterApiKey    String?  @map("openrouter_api_key")
+  openrouterModel     String?  @map("openrouter_model")
+  lmstudioBaseUrl     String?  @map("lmstudio_base_url")
+  lmstudioModel       String?  @map("lmstudio_model")
+  lmstudioApiKey      String?  @map("lmstudio_api_key")
+  fcmServerKey        String?  @map("fcm_server_key")
+  firebaseProjectId   String?  @map("firebase_project_id")
+  firebaseClientEmail String?  @map("firebase_client_email")
+  firebasePrivateKey  String?  @map("firebase_private_key")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_settings")
+}
+
+// ==================== USERS ====================
+
+model User {
+  id                       String   @id @default(uuid())
+  email                    String   @unique
+  passwordHash             String   @map("password_hash")
+  displayName              String   @map("display_name")
+  fcmToken                 String?  @map("fcm_token")
+  googleRefreshToken       String?  @map("google_refresh_token")
+  selectedGoogleCalendarIds String[] @default([]) @map("selected_google_calendar_ids")
+  hideLocalCalendar        Boolean  @default(false) @map("hide_local_calendar")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  financeCategories   FinanceCategory[]
+  transactions        FinanceTransaction[]
+  capitalAccounts     CapitalAccount[]
+  financeSeries       FinanceRecurringSeries[]
+  recipes             Recipe[]
+  calendarEvents      CalendarEvent[]
+  objectives          LifeAreaObjective[]
+  menus               Menu[]
+  ingredients         Ingredient[]
+  shoppingLists       ShoppingList[]
+  routines            Routine[]
+  recurringRules      RecurringRule[]
+  notifications       Notification[]
+  timeAllocations     TimeAllocation[]
+  settings            UserSettings?
+  lifeAreaPreferences LifeAreaPreference[]
+
+  @@map("users")
+}
+
+model LifeAreaPreference {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  lifeArea  LifeArea @map("life_area")
+  label     String?
+  color     String?
+  sortOrder Int      @default(0) @map("sort_order")
+  archived  Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lifeArea])
+  @@map("life_area_preferences")
+}
+
+// ==================== FINANCE ====================
+
+model FinanceCategory {
+  id            String          @id @default(uuid())
+  userId        String          @map("user_id")
+  name          String
+  lifeArea      LifeArea        @map("life_area")
+  type          TransactionType
+  budgetMonthly Decimal?        @map("budget_monthly") @db.Decimal(12, 2)
+  isFixedCharge Boolean         @default(false) @map("is_fixed_charge")
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+
+  user          User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions  FinanceTransaction[]
+  series        FinanceRecurringSeries[]
+
+  @@map("finance_categories")
+}
+
+model FinanceTransaction {
+  id              String            @id @default(uuid())
+  userId          String            @map("user_id")
+  categoryId      String            @map("category_id")
+  accountId       String?           @map("account_id")
+  amount          Decimal           @db.Decimal(12, 2)
+  description     String
+  date            DateTime          @db.Date
+  lifeArea        LifeArea          @map("life_area")
+  status          TransactionStatus @default(REALIZED)
+  recurringRuleId String?           @map("recurring_rule_id")
+  seriesId        String?           @map("series_id")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  user            User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category        FinanceCategory         @relation(fields: [categoryId], references: [id])
+  recurringRule   RecurringRule?          @relation(fields: [recurringRuleId], references: [id])
+  account         CapitalAccount?         @relation(fields: [accountId], references: [id])
+  series          FinanceRecurringSeries? @relation(fields: [seriesId], references: [id])
+  shoppingList    ShoppingList?
+
+  @@index([userId, date])
+  @@index([userId, lifeArea])
+  @@index([userId, status, date])
+  @@map("finance_transactions")
+}
+
+// ==================== CAPITAL ACCOUNTS ====================
+
+model CapitalAccount {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  name            String
+  startingBalance Decimal  @map("starting_balance") @db.Decimal(14, 2)
+  referenceDate   DateTime @map("reference_date") @db.Date
+  currency        String   @default("EUR")
+  isPrimary       Boolean  @default(false) @map("is_primary")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user         User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions FinanceTransaction[]
+  series       FinanceRecurringSeries[]
+
+  @@index([userId])
+  @@map("capital_accounts")
+}
+
+// ==================== FINANCE RECURRING SERIES ====================
+// A recurring income or expense definition that materializes into
+// FinanceTransaction rows on each occurrence. Used by the projection
+// engine to simulate the capital curve into the future.
+
+model FinanceRecurringSeries {
+  id             String          @id @default(uuid())
+  userId         String          @map("user_id")
+  categoryId     String          @map("category_id")
+  accountId      String?         @map("account_id")
+  description    String
+  amount         Decimal         @db.Decimal(12, 2)
+  type           TransactionType
+  lifeArea       LifeArea        @map("life_area")
+  recurrenceType RecurrenceType  @map("recurrence_type")
+  interval       Int             @default(1)
+  daysOfWeek     Int[]           @default([]) @map("days_of_week")
+  dayOfMonth     Int?            @map("day_of_month")
+  monthOfYear    Int?            @map("month_of_year")
+  startDate      DateTime        @map("start_date") @db.Date
+  endDate        DateTime?       @map("end_date") @db.Date
+  paused         Boolean         @default(false)
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  user         User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category     FinanceCategory      @relation(fields: [categoryId], references: [id])
+  account      CapitalAccount?      @relation(fields: [accountId], references: [id])
+  transactions FinanceTransaction[]
+
+  @@index([userId])
+  @@map("finance_recurring_series")
+}
+
+// ==================== CALENDAR ====================
+
+model CalendarEvent {
+  id                 String         @id @default(uuid())
+  userId             String         @map("user_id")
+  title              String
+  description        String?
+  lifeArea           LifeArea       @map("life_area")
+  startTime          DateTime       @map("start_time")
+  endTime            DateTime       @map("end_time")
+  allDay             Boolean        @default(false) @map("all_day")
+  googleEventId      String?        @map("google_event_id")
+  googleCalendarId   String?        @map("google_calendar_id")
+  googleCalendarName String?        @map("google_calendar_name")
+  googleColor        String?        @map("google_color")
+  recurringRuleId    String?        @map("recurring_rule_id")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  recurringRule   RecurringRule? @relation(fields: [recurringRuleId], references: [id])
+
+  @@index([userId, startTime])
+  @@index([userId, lifeArea])
+  @@map("calendar_events")
+}
+
+model TimeAllocation {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  lifeArea   LifeArea @map("life_area")
+  percentage Int
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lifeArea])
+  @@map("time_allocations")
+}
+
+model LifeAreaObjective {
+  id          String          @id @default(uuid())
+  userId      String          @map("user_id")
+  lifeArea    LifeArea        @map("life_area")
+  title       String
+  description String?
+  targetDate  DateTime?       @map("target_date") @db.Date
+  status      ObjectiveStatus @default(ACTIVE)
+  progressPct Int             @default(0) @map("progress_pct")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, lifeArea])
+  @@map("life_area_objectives")
+}
+
+// ==================== SHOPPING ====================
+
+model Menu {
+  id       String       @id @default(uuid())
+  userId   String       @map("user_id")
+  name     String
+  dateFrom DateTime     @map("date_from") @db.Date
+  dateTo   DateTime     @map("date_to") @db.Date
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  recipes  MenuRecipe[]
+  shoppingLists ShoppingList[]
+
+  @@map("menus")
+}
+
+model MenuRecipe {
+  id         String   @id @default(uuid())
+  menuId     String   @map("menu_id")
+  recipeId   String   @map("recipe_id")
+  servings   Int      @default(1)
+  dayOfWeek  Int      @map("day_of_week")
+  mealType   MealType @map("meal_type")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  menu       Menu     @relation(fields: [menuId], references: [id], onDelete: Cascade)
+  recipe     Recipe   @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([menuId])
+  @@index([recipeId])
+  @@map("menu_recipes")
+}
+
+model Recipe {
+  id              String   @id @default(uuid())
+  userId          String   @map("user_id")
+  name            String
+  description     String?
+  instructions    String?
+  defaultServings Int      @default(1) @map("default_servings")
+  imageUrl        String?  @map("image_url")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ingredients RecipeIngredient[]
+  menuEntries MenuRecipe[]
+
+  @@index([userId])
+  @@map("recipes")
+}
+
+model Ingredient {
+  id              String             @id @default(uuid())
+  userId          String             @map("user_id")
+  name            String
+  defaultUnit     String             @map("default_unit")
+  defaultPrice    Decimal?           @map("default_price") @db.Decimal(8, 2)
+  purchaseLocation String?           @map("purchase_location")
+  isOnline        Boolean            @default(false) @map("is_online")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  recipeIngredients RecipeIngredient[]
+  shoppingListItems ShoppingListItem[]
+
+  @@map("ingredients")
+}
+
+model RecipeIngredient {
+  id           String     @id @default(uuid())
+  recipeId     String     @map("recipe_id")
+  ingredientId String     @map("ingredient_id")
+  quantity     Decimal    @db.Decimal(8, 3)
+  unit         String
+
+  recipe       Recipe     @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id])
+
+  @@index([recipeId])
+  @@map("recipe_ingredients")
+}
+
+model ShoppingList {
+  id                   String             @id @default(uuid())
+  userId               String             @map("user_id")
+  menuId               String?            @map("menu_id")
+  name                 String
+  status               ShoppingListStatus @default(DRAFT)
+  plannedDate          DateTime?          @map("planned_date") @db.Date
+  totalEstimatedCost   Decimal?           @map("total_estimated_cost") @db.Decimal(12, 2)
+  totalActualCost      Decimal?           @map("total_actual_cost") @db.Decimal(12, 2)
+  financeTransactionId String?            @unique @map("finance_transaction_id")
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
+
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  menu               Menu?               @relation(fields: [menuId], references: [id])
+  items              ShoppingListItem[]
+  financeTransaction FinanceTransaction? @relation(fields: [financeTransactionId], references: [id], onDelete: SetNull)
+
+  @@map("shopping_lists")
+}
+
+model ShoppingListItem {
+  id               String       @id @default(uuid())
+  listId           String       @map("list_id")
+  ingredientId     String       @map("ingredient_id")
+  quantity         Decimal      @db.Decimal(8, 3)
+  unit             String
+  estimatedPrice   Decimal?     @map("estimated_price") @db.Decimal(8, 2)
+  checked          Boolean      @default(false)
+  purchaseLocation String?      @map("purchase_location")
+
+  list             ShoppingList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  ingredient       Ingredient   @relation(fields: [ingredientId], references: [id])
+
+  @@map("shopping_list_items")
+}
+
+// ==================== ROUTINES ====================
+
+model Routine {
+  id              String         @id @default(uuid())
+  userId          String         @map("user_id")
+  title           String
+  description     String?
+  lifeArea        LifeArea       @map("life_area")
+  timeOfDay       String?        @map("time_of_day")
+  alarmEnabled    Boolean        @default(true) @map("alarm_enabled")
+  recurringRuleId String?        @map("recurring_rule_id")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  recurringRule   RecurringRule? @relation(fields: [recurringRuleId], references: [id])
+  steps           RoutineStep[]
+
+  @@index([userId])
+  @@map("routines")
+}
+
+model RoutineStep {
+  id              String                @id @default(uuid())
+  routineId       String                @map("routine_id")
+  orderIndex      Int                   @map("order_index")
+  title           String
+  kind            RoutineStepKind       @default(CUSTOM)
+  durationMinutes Int                   @map("duration_minutes")
+  mediaUrl        String?               @map("media_url")
+  mediaKind       RoutineStepMediaKind? @map("media_kind")
+  mediaAutoplay   Boolean               @default(false) @map("media_autoplay")
+  notes           String?
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
+
+  routine Routine @relation(fields: [routineId], references: [id], onDelete: Cascade)
+
+  @@index([routineId])
+  @@map("routine_steps")
+}
+
+// ==================== SHARED ====================
+
+model RecurringRule {
+  id             String         @id @default(uuid())
+  userId         String         @map("user_id")
+  type           RecurrenceType
+  interval       Int            @default(1)
+  daysOfWeek     Int[]          @map("days_of_week")
+  dayOfMonth     Int?           @map("day_of_month")
+  startDate      DateTime       @map("start_date") @db.Date
+  endDate        DateTime?      @map("end_date") @db.Date
+  cronExpression String?        @map("cron_expression")
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions   FinanceTransaction[]
+  calendarEvents CalendarEvent[]
+  routines       Routine[]
+
+  @@map("recurring_rules")
+}
+
+model Notification {
+  id           String    @id @default(uuid())
+  userId       String    @map("user_id")
+  title        String
+  body         String
+  scheduledAt  DateTime  @map("scheduled_at")
+  sentAt       DateTime? @map("sent_at")
+  moduleSource String    @map("module_source")
+  referenceId  String    @map("reference_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([scheduledAt, sentAt])
+  @@map("notifications")
+}
