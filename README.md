@@ -1,36 +1,49 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# sona-dashboard
 
-## Getting Started
+Monorepo for the Sona dashboard â a Next.js UI that talks to the Sona agent API.
 
-First, run the development server:
+## Structure
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+sona-dashboard/
+├── frontend/        # Next.js 15 dashboard UI (served on port 3010)
+├── backend/         # Express proxy API â bridges frontend to Sona agent (port 3001)
+├── docker-compose.yml       # Production compose
+├── docker-compose.dev.yml   # Dev overrides (hot-reload)
+└── README.md
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### frontend/
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Next.js 15 app with Tailwind CSS. Pages: `/`, `/jobs`, `/agents`, `/memory`, `/system`.
+Talks to `backend` via `NEXT_PUBLIC_API_URL`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### backend/
 
-## Learn More
+Minimal Express app that proxies `/api/*`, `/chat`, and `/tool` requests to the Sona agent HTTP API at `SONA_API_URL` (default `http://localhost:8080`).
 
-To learn more about Next.js, take a look at the following resources:
+## Running (dev)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Frontend hot-reload: http://localhost:3010
+- Backend: http://localhost:3001
+- Backend health: http://localhost:3001/health
 
-## Deploy on Vercel
+## Running (production)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+docker compose up -d
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Environment variables
+
+| Variable | Default | Where |
+|---|---|---|
+| `NEXT_PUBLIC_API_URL` | `http://backend:3001` | frontend container |
+| `PORT` | `3001` | backend container |
+| `SONA_API_URL` | `http://host.docker.internal:8080` | backend container |
+
+Copy `backend/.env.example` to `backend/.env` for local dev outside Docker.
