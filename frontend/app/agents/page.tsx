@@ -99,10 +99,41 @@ export default function AgentsPage() {
   }, []);
 
   useEffect(() => {
-    fetchJobs();
-    const id = setInterval(fetchJobs, 5000);
-    return () => clearInterval(id);
-  }, [fetchJobs]);
+    let es: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      es = new EventSource('/api/jobs/stream');
+
+      es.onmessage = (e) => {
+        try {
+          const all: Job[] = JSON.parse(e.data);
+          all.sort((a, b) => {
+            const aRunning = a.status === 'running' || a.status === 'in_progress';
+            const bRunning = b.status === 'running' || b.status === 'in_progress';
+            if (aRunning && !bRunning) return -1;
+            if (!aRunning && bRunning) return 1;
+            return (b.mtime ?? 0) - (a.mtime ?? 0);
+          });
+          setJobs(all.filter((j) => j.status === 'running' || j.status === 'in_progress'));
+          setLoading(false);
+        } catch { /* ignore parse errors */ }
+      };
+
+      es.onerror = () => {
+        es?.close();
+        es = null;
+        retryTimer = setTimeout(connect, 3000);
+      };
+    };
+
+    connect();
+
+    return () => {
+      es?.close();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, []);
 
   return (
     <PageShell>
