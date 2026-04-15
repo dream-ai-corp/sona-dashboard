@@ -1,17 +1,19 @@
 {
   "name": "sona-dashboard-backend",
-  "version": "1.0.0",
-  "description": "Sona dashboard API — proxies to Sona agent HTTP API",
+  "version": "2.0.0",
+  "description": "Sona dashboard API — SQLite persistence + filesystem sync",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "node --watch src/index.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "http-proxy-middleware": "^3.0.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.0.0"
+    "dotenv": "^16.0.0",
+    "better-sqlite3": "^9.4.3",
+    "node-cron": "^3.0.3",
+    "node-fetch": "^2.7.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.0"

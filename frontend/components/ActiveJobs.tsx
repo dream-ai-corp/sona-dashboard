@@ -1,19 +1,21 @@
 'use client';
-import { useEffect, useState, useRef } from 'react';
+import { useState } from 'react';
+import { useSSE } from '@/lib/useSSE';
 
 interface Job {
   id: string;
   goal?: string;
   status?: string;
   startedAt?: string | number;
+  started_at?: string | number;
   result?: string;
+  mtime?: number;
 }
 
 function elapsed(startedAt?: string | number): string {
   if (!startedAt) return '';
   const start = typeof startedAt === 'number' ? startedAt : new Date(startedAt).getTime();
-  const ms = Date.now() - start;
-  const s = Math.floor(ms / 1000);
+  const s = Math.floor((Date.now() - start) / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ${s % 60}s`;
@@ -30,24 +32,10 @@ function statusBadge(status?: string) {
 
 export default function ActiveJobs() {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [error, setError] = useState('');
 
-  useEffect(() => {
-    const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://72.60.185.57:8080';
-    const load = async () => {
-      try {
-        const j = await fetch(`${apiUrl}/api/jobs`).then(r => r.json());
-        const arr: Job[] = Array.isArray(j) ? j : (j?.jobs ?? []);
-        setJobs(arr);
-        setError('');
-      } catch (e: any) {
-        setError(e?.message ?? 'fetch failed');
-      }
-    };
-    load();
-    const id = setInterval(load, 5000);
-    return () => clearInterval(id);
-  }, []);
+  useSSE<Job[]>('/api/jobs/stream', (all) => {
+    if (Array.isArray(all)) setJobs(all);
+  });
 
   const running = jobs.filter(j => j.status === 'running' || j.status === 'in_progress');
   const recent = jobs.filter(j => j.status !== 'running' && j.status !== 'in_progress').slice(0, 8);
@@ -61,7 +49,6 @@ export default function ActiveJobs() {
           Running Jobs
           <span className="ml-auto text-xs text-gray-400">{running.length} active</span>
         </h2>
-        {error && <p className="text-red-400 text-xs mb-2">{error}</p>}
         {running.length === 0 ? (
           <p className="text-gray-500 text-sm italic">No active jobs</p>
         ) : (
@@ -75,7 +62,7 @@ export default function ActiveJobs() {
                   </span>
                 </div>
                 <p className="text-white text-sm leading-snug line-clamp-2">{job.goal ?? '(no goal)'}</p>
-                <p className="text-gray-500 text-xs mt-1">elapsed: {elapsed(job.startedAt)}</p>
+                <p className="text-gray-500 text-xs mt-1">elapsed: {elapsed(job.started_at ?? job.startedAt)}</p>
               </li>
             ))}
           </ul>

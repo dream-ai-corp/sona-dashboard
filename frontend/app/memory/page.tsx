@@ -16,16 +16,18 @@ export default function MemoryPage() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? "http://72.60.185.57:8080";
+      const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
       const [brainRes, voiceRes] = await Promise.allSettled([
         fetch(`${apiUrl}/api/brain`).then(r => r.json()),
         fetch(`${apiUrl}/api/voice`).then(r => r.json()),
       ]);
       const b = brainRes.status === "fulfilled" ? brainRes.value : null;
       const v = voiceRes.status === "fulfilled" ? voiceRes.value : null;
+      // /api/voice returns {ok, en, fr} — show both in human-friendly form.
+      const voiceLabel = v?.en && v?.fr ? `${v.en} / ${v.fr}` : (v?.language ?? v?.voice ?? "n/a");
       setBrain({
         brain: b?.mode ?? b?.brain ?? "n/a",
-        voice: v?.language ?? v?.voice ?? "n/a",
+        voice: voiceLabel,
       });
     } finally {
       setLoading(false);
@@ -43,7 +45,7 @@ export default function MemoryPage() {
 
   return (
     <PageShell>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 32px", borderBottom: "1px solid rgba(255,255,255,0.06)", background: "rgba(15,15,26,0.6)", backdropFilter: "blur(10px)", position: "sticky", top: 0, zIndex: 40 }}>
+      <div className="sona-page-topbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 32px", borderBottom: "1px solid rgba(255,255,255,0.06)", background: "rgba(15,15,26,0.6)", backdropFilter: "blur(10px)", position: "sticky", top: 0, zIndex: 40 }}>
         <div>
           <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#f1f5f9", margin: 0 }}>Memory</h1>
           <p style={{ fontSize: "12px", color: "#64748b", margin: "3px 0 0" }}>Brain config and memory file locations</p>
@@ -67,7 +69,7 @@ export default function MemoryPage() {
               <Volume2 size={28} color="#67e8f9" />
               <div>
                 <div style={{ fontSize: "11px", color: "#64748b", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "4px" }}>Voice Language</div>
-                <div style={{ fontSize: "18px", fontWeight: 700, color: "#67e8f9", fontFamily: "monospace" }}>{brain.voice.toUpperCase()}</div>
+                <div style={{ fontSize: "14px", fontWeight: 700, color: "#67e8f9", fontFamily: "monospace", wordBreak: "break-word" }}>{brain.voice}</div>
               </div>
             </div>
           </div>

@@ -2,6 +2,8 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Sidebar from '@/components/Sidebar';
+import SonaFloatingChat from '@/components/SonaFloatingChat';
+import SonaChatInput from '@/components/SonaChatInput';
 import StatCard from '@/components/StatCard';
 import {
   Bot,
@@ -172,44 +174,72 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  const fetchData = useCallback(async () => {
+  const fetchSystem = useCallback(async () => {
     setLoading(true);
     try {
-      const apiUrl = typeof window !== 'undefined'
-        ? (process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://72.60.185.57:8080')
-        : '';
-
-      const [sysRes, jobsRes] = await Promise.allSettled([
-        fetch('/api/system').then(r => r.json()),
-        fetch('/api/jobs').then(r => r.json()),
-      ]);
-
-      if (sysRes.status === 'fulfilled') setDaemon(sysRes.value);
-      if (jobsRes.status === 'fulfilled') {
-        const j = jobsRes.value;
-        setJobs(Array.isArray(j) ? j : (j?.jobs ?? []));
-      }
-
-      // Brain + voice direct from sona (best-effort)
-      if (apiUrl) {
-        Promise.allSettled([
-          fetch(`${apiUrl}/api/brain`).then(r => r.json()),
-          fetch(`${apiUrl}/api/voice`).then(r => r.json()),
-        ]).then(([b, v]) => {
-          if (b.status === 'fulfilled') setBrain(b.value?.mode ?? b.value?.brain ?? 'n/a');
-          if (v.status === 'fulfilled') setVoice(v.value?.language ?? v.value?.voice ?? 'n/a');
-        });
-      }
+      const sysRes = await fetch('/api/system').then(r => r.json()).catch(() => null);
+      if (sysRes && !sysRes.error) setDaemon(sysRes);
     } finally {
       setLoading(false);
     }
   }, []);
 
+  // SSE: real-time job updates via /api/jobs/stream
   useEffect(() => {
-    fetchData();
-    const id = setInterval(fetchData, 5000);
-    return () => clearInterval(id);
-  }, [fetchData]);
+    let es: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const connect = () => {
+      es = new EventSource('/api/jobs/stream');
+      es.onmessage = (e) => {
+        try {
+          const all: Job[] = JSON.parse(e.data);
+          all.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
+          setJobs(all);
+          setLoading(false);
+        } catch { /* ignore */ }
+      };
+      es.onerror = () => {
+        es?.close(); es = null;
+        retryTimer = setTimeout(connect, 3000);
+      };
+    };
+    connect();
+    return () => { es?.close(); if (retryTimer) clearTimeout(retryTimer); };
+  }, []);
+
+  // SSE: real-time daemon / brain / voice updates via /api/stream
+  useEffect(() => {
+    let es: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const connect = () => {
+      es = new EventSource('/api/stream');
+      es.addEventListener('daemon', (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          setDaemon({ enabled: d.enabled, running: d.enabled, lastTick: d.lastTickAt, intervalMs: (d.intervalSec ?? 180) * 1000, maxConcurrent: d.maxConcurrent });
+        } catch { /* ignore */ }
+      });
+      es.addEventListener('brain', (e) => {
+        try { setBrain(JSON.parse(e.data)?.mode ?? 'n/a'); } catch { /* ignore */ }
+      });
+      es.addEventListener('voice', (e) => {
+        try {
+          const v = JSON.parse(e.data);
+          setVoice(v?.language ?? v?.voice ?? v?.en ?? 'en');
+        } catch { /* ignore */ }
+      });
+      es.onerror = () => {
+        es?.close(); es = null;
+        retryTimer = setTimeout(connect, 5000);
+      };
+    };
+    connect();
+    return () => { es?.close(); if (retryTimer) clearTimeout(retryTimer); };
+  }, []);
+
+  // System: load once on mount as fallback for daemon state
+  const fetchData = useCallback(() => fetchSystem(), [fetchSystem]);
+  useEffect(() => { fetchSystem(); }, [fetchSystem]);
 
   /* derived stats */
   const running = jobs.filter(j => j.status === 'running' || j.status === 'in_progress');
@@ -240,25 +270,31 @@ export default function Home() {
       <main style={{ flex: 1, marginLeft: '240px', display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
 
         {/* ── Top bar ── */}
-        <div style={{
+        <div className="sona-page-topbar" style={{
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '20px 32px',
+          gap: '20px',
+          padding: '16px 32px',
           borderBottom: '1px solid rgba(255,255,255,0.06)',
           background: 'rgba(15,15,26,0.6)',
           backdropFilter: 'blur(10px)',
           position: 'sticky',
           top: 0,
           zIndex: 40,
+          flexWrap: 'wrap',
         }}>
-          <div>
-            <h1 style={{ fontSize: '22px', fontWeight: 700, color: '#f1f5f9', margin: 0, lineHeight: 1.2 }}>
+          <div style={{ flex: '0 0 auto' }}>
+            <h1 style={{ fontSize: '18px', fontWeight: 700, color: '#f1f5f9', margin: 0, lineHeight: 1.2 }}>
               Sona Dashboard
             </h1>
-            <p style={{ fontSize: '12px', color: '#64748b', margin: '3px 0 0' }}>
+            <p style={{ fontSize: '11px', color: '#64748b', margin: '2px 0 0' }}>
               Real-time AI assistant control panel
             </p>
+          </div>
+
+          {/* Composite chat input — desktop only; mobile uses floating chat */}
+          <div className="sona-topbar-chat" style={{ flex: '1 1 420px', minWidth: '280px', maxWidth: '720px' }}>
+            <SonaChatInput sessionId="dashboard" channel="dashboard" compact={true} />
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
@@ -526,9 +562,16 @@ export default function Home() {
           padding: '16px',
           borderTop: '1px solid rgba(255,255,255,0.04)',
         }}>
-          Sona Dashboard · auto-refreshes every 5 s · {now}
+          Sona Dashboard · live via SSE · {now}
         </div>
       </main>
+      <SonaFloatingChat />
+      <style jsx global>{`
+        @media (max-width: 768px) {
+          .sona-topbar-chat { display: none !important; }
+          .sona-topbar-mobile-offset { padding-left: 56px !important; }
+        }
+      `}</style>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useSSE } from '@/lib/useSSE';
 
 interface Card {
   label: string;
@@ -10,7 +11,7 @@ interface Card {
 
 function StatCard({ label, value, sub, color }: Card) {
   return (
-    <div className={`flex-1 rounded-xl p-4 bg-gray-800 border border-gray-700 shadow`}>
+    <div className="flex-1 rounded-xl p-4 bg-gray-800 border border-gray-700 shadow">
       <p className="text-gray-400 text-xs uppercase tracking-wide mb-1">{label}</p>
       <p className={`text-2xl font-bold ${color}`}>{value}</p>
       {sub && <p className="text-gray-500 text-xs mt-1">{sub}</p>}
@@ -18,31 +19,24 @@ function StatCard({ label, value, sub, color }: Card) {
   );
 }
 
+interface Job { id: string; status?: string; }
+interface StatusPayload { daemon?: any; brain?: any; voice?: any; }
+
 export default function StatusRow() {
   const [daemon, setDaemon] = useState<any>(null);
-  const [jobs, setJobs] = useState<any[]>([]);
-  const [sys, setSys] = useState<any>(null);
-  const [containers, setContainers] = useState<string>('...');
+  const [activeCount, setActiveCount] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
 
-  useEffect(() => {
-    const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://72.60.185.57:8080';
-    const load = async () => {
-      try {
-        const [d, j] = await Promise.all([
-          fetch(`${apiUrl}/api/daemon`).then(r => r.json()),
-          fetch(`${apiUrl}/api/jobs`).then(r => r.json()),
-        ]);
-        setDaemon(d);
-        const jobArr = Array.isArray(j) ? j : (j?.jobs ?? []);
-        setJobs(jobArr);
-      } catch {}
-    };
-    load();
-    const id = setInterval(load, 5000);
-    return () => clearInterval(id);
-  }, []);
+  useSSE<Job[]>('/api/jobs/stream', (all) => {
+    if (!Array.isArray(all)) return;
+    setActiveCount(all.filter(j => j.status === 'running' || j.status === 'in_progress').length);
+    setTotalCount(all.length);
+  });
 
-  const active = jobs.filter((j: any) => j?.status === 'running' || j?.status === 'in_progress').length;
+  useSSE<StatusPayload>('/api/status/stream', (data) => {
+    if (data?.daemon) setDaemon(data.daemon);
+  });
+
   const daemonOn = daemon?.enabled ?? daemon?.running ?? false;
   const lastTick = daemon?.lastTick ? new Date(daemon.lastTick).toLocaleTimeString() : '--';
 
@@ -56,8 +50,8 @@ export default function StatusRow() {
       />
       <StatCard
         label="Active Agents"
-        value={String(active)}
-        sub={`${jobs.length} total jobs`}
+        value={String(activeCount)}
+        sub={`${totalCount} total jobs`}
         color="text-violet-400"
       />
       <StatCard

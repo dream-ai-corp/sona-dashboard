@@ -1,21 +1,15 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useSSE } from '@/lib/useSSE';
+
+interface StatusPayload { daemon?: any; brain?: any; voice?: any; }
 
 export default function SystemPanel() {
   const [daemon, setDaemon] = useState<any>(null);
 
-  useEffect(() => {
-    const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://72.60.185.57:8080';
-    const load = async () => {
-      try {
-        const d = await fetch(`${apiUrl}/api/daemon`).then(r => r.json());
-        setDaemon(d);
-      } catch {}
-    };
-    load();
-    const id = setInterval(load, 15000);
-    return () => clearInterval(id);
-  }, []);
+  useSSE<StatusPayload>('/api/status/stream', (data) => {
+    if (data?.daemon) setDaemon(data.daemon);
+  });
 
   const rows: [string, string][] = [
     ['Host', 'srv1589372 (Hostinger KVM4)'],

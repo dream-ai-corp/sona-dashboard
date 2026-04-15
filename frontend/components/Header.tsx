@@ -1,16 +1,15 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { useSSE } from '@/lib/useSSE';
 
-interface StatusData {
-  brain?: { mode?: string };
-  voice?: { language?: string };
-}
+interface StatusPayload { daemon?: any; brain?: any; voice?: any; }
 
 export default function Header() {
   const [now, setNow] = useState('');
   const [brain, setBrain] = useState('...');
   const [voice, setVoice] = useState('...');
 
+  // Clock — local tick, not a data fetch
   useEffect(() => {
     const tick = () => setNow(new Date().toLocaleString('en-US', { hour12: false }));
     tick();
@@ -18,25 +17,16 @@ export default function Header() {
     return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://72.60.185.57:8080';
-        const [b, v] = await Promise.all([
-          fetch(`${apiUrl}/api/brain`).then(r => r.json()),
-          fetch(`${apiUrl}/api/voice`).then(r => r.json()),
-        ]);
-        setBrain(b?.mode ?? b?.brain ?? JSON.stringify(b));
-        setVoice(v?.language ?? v?.voice ?? JSON.stringify(v));
-      } catch {
-        setBrain('err');
-        setVoice('err');
-      }
-    };
-    load();
-    const id = setInterval(load, 10000);
-    return () => clearInterval(id);
-  }, []);
+  useSSE<StatusPayload>('/api/status/stream', (data) => {
+    if (data?.brain) {
+      const b = data.brain;
+      setBrain(b?.mode ?? b?.brain ?? JSON.stringify(b));
+    }
+    if (data?.voice) {
+      const v = data.voice;
+      setVoice(v?.language ?? v?.voice ?? JSON.stringify(v));
+    }
+  });
 
   const brainColor = brain === 'claude_code' ? 'bg-violet-500' : brain === 'lmstudio' ? 'bg-blue-500' : 'bg-gray-500';
   const voiceColor = voice?.toUpperCase?.() === 'FR' ? 'bg-rose-500' : 'bg-emerald-500';

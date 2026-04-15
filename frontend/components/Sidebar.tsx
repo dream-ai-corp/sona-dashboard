@@ -1,7 +1,9 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useEffect, useState, useCallback } from 'react';
 import {
+  Menu,
   LayoutDashboard,
   Bot,
   Briefcase,
@@ -9,24 +11,285 @@ import {
   Brain,
   Settings,
   Zap,
+  FolderOpen,
+  FolderKanban,
+  ChevronRight,
+  ChevronDown,
+  Plus,
+  Activity,
+  MessageSquare,
 } from 'lucide-react';
 
 const navItems = [
-  { icon: LayoutDashboard, label: 'Dashboard', route: '/' },
-  { icon: Bot,             label: 'Agents',    route: '/agents' },
-  { icon: Briefcase,       label: 'Jobs',      route: '/jobs' },
-  { icon: Cpu,             label: 'System',    route: '/system' },
-  { icon: Brain,           label: 'Memory',    route: '/memory' },
-  { icon: Settings,        label: 'Settings',  route: '/system' },
+  { icon: LayoutDashboard, label: 'Dashboard',     route: '/' },
+  { icon: Bot,             label: 'Agents',        route: '/agents' },
+  { icon: Briefcase,       label: 'Jobs',          route: '/jobs' },
+  { icon: Activity,        label: 'Activity',      route: '/activity' },
+  { icon: MessageSquare,   label: 'Conversations', route: '/conversations' },
+  { icon: Cpu,             label: 'System',        route: '/system' },
+  { icon: Brain,           label: 'Memory',        route: '/memory' },
+  { icon: FolderKanban,    label: 'Projects',      route: '/projects' },
+  { icon: Settings,        label: 'Settings',      route: '/system' },
 ];
+
+interface Project {
+  id: string;
+  name: string;
+  jobStats?: { running: number; done: number; failed: number; error: number };
+}
+
+interface BacklogItem {
+  checked: boolean;
+  text: string;
+  lineIndex: number;
+}
+
+function parseBacklog(content: string): BacklogItem[] {
+  return content
+    .split('\n')
+    .map((line, i) => {
+      const checked = /^- \[x\]/i.test(line);
+      const unchecked = /^- \[ \]/.test(line);
+      if (!checked && !unchecked) return null;
+      const text = line.replace(/^- \[.\]\s*/, '').replace(/\s*\(job:[^)]+\)/, '').trim();
+      return { checked, text, lineIndex: i };
+    })
+    .filter(Boolean) as BacklogItem[];
+}
+
+function toggleLine(content: string, lineIndex: number, checked: boolean): string {
+  const lines = content.split('\n');
+  const line = lines[lineIndex];
+  if (checked) {
+    lines[lineIndex] = line.replace(/^- \[x\]/i, '- [ ]');
+  } else {
+    lines[lineIndex] = line.replace(/^- \[ \]/, '- [x]');
+  }
+  return lines.join('\n');
+}
+
+function ProjectSection({ project }: { project: Project }) {
+  const [open, setOpen] = useState(false);
+  const [backlog, setBacklog] = useState('');
+  const [items, setItems] = useState<BacklogItem[]>([]);
+  const [newItem, setNewItem] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const fetchBacklog = useCallback(async () => {
+    const res = await fetch(`/api/projects/${encodeURIComponent(project.id)}/backlog`);
+    if (res.ok) {
+      const data = await res.json();
+      setBacklog(data.content ?? '');
+      setItems(parseBacklog(data.content ?? ''));
+    }
+  }, [project.id]);
+
+  useEffect(() => {
+    if (open) fetchBacklog();
+  }, [open, fetchBacklog]);
+
+  const saveBacklog = async (newContent: string) => {
+    setSaving(true);
+    try {
+      await fetch(`/api/projects/${encodeURIComponent(project.id)}/backlog`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: newContent }),
+      });
+      setBacklog(newContent);
+      setItems(parseBacklog(newContent));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggle = async (item: BacklogItem) => {
+    const newContent = toggleLine(backlog, item.lineIndex, item.checked);
+    await saveBacklog(newContent);
+  };
+
+  const handleAdd = async () => {
+    const text = newItem.trim();
+    if (!text) return;
+    const newContent = backlog + (backlog.endsWith('\n') ? '' : '\n') + `- [ ] ${text}\n`;
+    await saveBacklog(newContent);
+    setNewItem('');
+  };
+
+  const runningCount = project.jobStats?.running ?? 0;
+
+  return (
+    <div style={{ marginBottom: '2px' }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '8px 14px',
+          borderRadius: '8px',
+          cursor: 'pointer',
+          width: '100%',
+          textAlign: 'left',
+          background: 'transparent',
+          color: '#64748b',
+          border: 'none',
+          fontSize: '13px',
+          fontFamily: 'inherit',
+          transition: 'all 150ms ease',
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.04)')}
+        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+      >
+        <FolderOpen size={14} />
+        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {project.name}
+        </span>
+        {runningCount > 0 && (
+          <span style={{
+            fontSize: '9px', fontWeight: 700, background: 'rgba(6,182,212,0.15)',
+            color: '#67e8f9', border: '1px solid rgba(6,182,212,0.3)',
+            borderRadius: '10px', padding: '1px 5px',
+          }}>
+            {runningCount}
+          </span>
+        )}
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+      </button>
+
+      {open && (
+        <div style={{
+          marginLeft: '14px',
+          paddingLeft: '12px',
+          borderLeft: '1px solid rgba(255,255,255,0.06)',
+          marginBottom: '4px',
+        }}>
+          {items.length === 0 && (
+            <p style={{ fontSize: '11px', color: '#334155', padding: '4px 0', margin: 0 }}>No backlog items</p>
+          )}
+          {items.map((item, i) => (
+            <label
+              key={i}
+              style={{
+                display: 'flex', alignItems: 'flex-start', gap: '6px',
+                padding: '3px 4px', cursor: 'pointer',
+                fontSize: '11px', color: item.checked ? '#475569' : '#94a3b8',
+                textDecoration: item.checked ? 'line-through' : 'none',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={item.checked}
+                disabled={saving}
+                onChange={() => handleToggle(item)}
+                style={{ marginTop: '2px', flexShrink: 0, accentColor: '#7c3aed', cursor: 'pointer' }}
+              />
+              <span style={{ lineHeight: 1.4 }}>{item.text}</span>
+            </label>
+          ))}
+          <div style={{ display: 'flex', gap: '4px', marginTop: '6px' }}>
+            <input
+              type="text"
+              value={newItem}
+              onChange={(e) => setNewItem(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
+              placeholder="Add item…"
+              style={{
+                flex: 1, fontSize: '11px', padding: '4px 6px',
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: '6px', color: '#94a3b8',
+                outline: 'none', fontFamily: 'inherit',
+              }}
+            />
+            <button
+              onClick={handleAdd}
+              disabled={saving || !newItem.trim()}
+              style={{
+                padding: '4px 6px', borderRadius: '6px',
+                background: 'rgba(124,58,237,0.15)',
+                border: '1px solid rgba(124,58,237,0.3)',
+                color: '#a78bfa', cursor: 'pointer',
+                display: 'flex', alignItems: 'center',
+              }}
+            >
+              <Plus size={11} />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const [projects, setProjects] = useState<Project[]>([]);
+
+  useEffect(() => {
+    fetch('/api/projects')
+      .then((r) => r.json())
+      .then((data) => {
+        const list: Project[] = Array.isArray(data)
+          ? data
+          : (data?.projects ?? []);
+        setProjects(list);
+      })
+      .catch(() => {});
+  }, []);
+
+  const [mobileOpen, setMobileOpen] = useState(false)
+
+  // Close drawer on route change
+  useEffect(() => { setMobileOpen(false) }, [pathname])
 
   return (
-    <aside
-      style={{
-        width: '240px',
+    <>
+      {/* Mobile hamburger (only visible < 768px) */}
+      <button
+        onClick={() => setMobileOpen((v) => !v)}
+        aria-label="Toggle menu"
+        className="sona-mobile-hamburger"
+        style={{
+          position: 'fixed',
+          top: '14px',
+          left: '14px',
+          width: '44px',
+          height: '44px',
+          borderRadius: '12px',
+          background: 'rgba(15,15,26,0.92)',
+          border: '1px solid rgba(124,58,237,0.3)',
+          color: '#c4b5fd',
+          cursor: 'pointer',
+          zIndex: 70,
+          display: 'none',
+          alignItems: 'center',
+          justifyContent: 'center',
+          backdropFilter: 'blur(12px)',
+        }}
+      >
+        <Menu size={20} />
+      </button>
+
+      {/* Mobile backdrop */}
+      {mobileOpen && (
+        <div
+          onClick={() => setMobileOpen(false)}
+          className="sona-mobile-backdrop"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.5)',
+            zIndex: 50,
+            display: 'none',
+          }}
+        />
+      )}
+
+      <aside
+        className={`sona-sidebar ${mobileOpen ? 'sona-sidebar-mobile-open' : ''}`}
+        style={{
+          width: '240px',
         minHeight: '100vh',
         background: 'rgba(15, 15, 26, 0.95)',
         borderRight: '1px solid rgba(255,255,255,0.06)',
@@ -36,9 +299,10 @@ export default function Sidebar() {
         left: 0,
         top: 0,
         bottom: 0,
-        zIndex: 50,
+        zIndex: 60,
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
+        overflowY: 'auto',
       }}
     >
       {/* Logo */}
@@ -46,6 +310,7 @@ export default function Sidebar() {
         style={{
           padding: '28px 24px 20px',
           borderBottom: '1px solid rgba(255,255,255,0.06)',
+          flexShrink: 0,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -87,7 +352,7 @@ export default function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav style={{ flex: 1, padding: '16px 12px' }}>
+      <nav style={{ padding: '16px 12px 8px', flexShrink: 0 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
           {navItems.map(({ icon: Icon, label, route }) => {
             const isActive = route === '/' ? pathname === '/' : pathname.startsWith(route);
@@ -137,11 +402,29 @@ export default function Sidebar() {
         </div>
       </nav>
 
+      {/* Projects */}
+      {projects.length > 0 && (
+        <div style={{ padding: '0 12px 8px', flexShrink: 0 }}>
+          <div style={{
+            padding: '8px 14px 6px',
+            fontSize: '10px', fontWeight: 700, letterSpacing: '0.1em',
+            color: '#334155', textTransform: 'uppercase',
+          }}>
+            Projects
+          </div>
+          {projects.map((p) => (
+            <ProjectSection key={p.id} project={p} />
+          ))}
+        </div>
+      )}
+
       {/* Bottom status */}
       <div
         style={{
+          marginTop: 'auto',
           padding: '16px 20px',
           borderTop: '1px solid rgba(255,255,255,0.06)',
+          flexShrink: 0,
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -163,5 +446,21 @@ export default function Sidebar() {
         </div>
       </div>
     </aside>
+    <style jsx global>{`
+      @media (max-width: 768px) {
+        .sona-mobile-hamburger { display: flex !important; }
+        .sona-sidebar {
+          transform: translateX(-100%);
+          transition: transform 280ms ease;
+          box-shadow: 4px 0 24px rgba(0,0,0,0.4);
+        }
+        .sona-sidebar-mobile-open { transform: translateX(0); }
+        .sona-mobile-backdrop { display: block !important; }
+        main { margin-left: 0 !important; }
+        /* Reserve space for the floating hamburger on each page top bar */
+        .sona-page-topbar { padding-left: 72px !important; }
+      }
+    `}</style>
+    </>
   );
 }

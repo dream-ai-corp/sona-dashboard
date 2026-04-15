@@ -110,8 +110,30 @@ export default function JobsPage() {
 
   useEffect(() => {
     fetchJobs();
-    const id = setInterval(fetchJobs, 5000);
-    return () => clearInterval(id);
+    let es: EventSource | null = null;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const connect = () => {
+      es = new EventSource('/api/jobs/stream');
+      es.onmessage = (e) => {
+        try {
+          const all: Job[] = JSON.parse(e.data);
+          setJobs(all);
+          setLoading(false);
+        } catch { /* ignore parse errors */ }
+      };
+      es.onerror = () => {
+        es?.close();
+        es = null;
+        retryTimer = setTimeout(connect, 3000);
+      };
+    };
+
+    connect();
+    return () => {
+      es?.close();
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [fetchJobs]);
 
   const filtered = jobs.filter(j => {
@@ -131,7 +153,7 @@ export default function JobsPage() {
   return (
     <PageShell>
       {/* Top bar */}
-      <div style={{
+      <div className="sona-page-topbar" style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '20px 32px', borderBottom: '1px solid rgba(255,255,255,0.06)',
         background: 'rgba(15,15,26,0.6)', backdropFilter: 'blur(10px)',
