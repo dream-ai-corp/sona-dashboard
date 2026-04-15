@@ -369,6 +369,11 @@ export default function ProjectDetailPage() {
   });
   const [sprintSaving, setSprintSaving] = useState(false);
 
+  // Status badge dropdown
+  const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
+  const [statusSaving, setStatusSaving] = useState(false);
+  const statusDropdownRef = useRef<HTMLDivElement>(null);
+
   const fetchProject = useCallback(async () => {
     try {
       const res = await fetch('/api/projects');
@@ -527,6 +532,36 @@ export default function ProjectDetailPage() {
     setSprints(data.sprints);
   };
 
+  const handleStatusChange = async (newStatus: string) => {
+    if (!project || statusSaving) return;
+    setStatusSaving(true);
+    setStatusDropdownOpen(false);
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (res.ok) {
+        setProject((prev) => prev ? { ...prev, status: newStatus } : prev);
+      }
+    } finally {
+      setStatusSaving(false);
+    }
+  };
+
+  // Close status dropdown on outside click
+  useEffect(() => {
+    if (!statusDropdownOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (statusDropdownRef.current && !statusDropdownRef.current.contains(e.target as Node)) {
+        setStatusDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [statusDropdownOpen]);
+
   const open = items.filter((i) => !i.checked);
   const done = items.filter((i) => i.checked);
   const ss = project ? statusStyle(project.status) : statusStyle('active');
@@ -566,13 +601,59 @@ export default function ProjectDetailPage() {
               {loadingProject ? id : (project?.name ?? id)}
             </h1>
             {project && (
-              <span style={{
-                fontSize: '10px', fontWeight: 700, padding: '3px 9px', borderRadius: '20px',
-                background: ss.bg, color: ss.color, border: `1px solid ${ss.border}`,
-                textTransform: 'uppercase', letterSpacing: '0.05em',
-              }}>
-                {project.status}
-              </span>
+              <div ref={statusDropdownRef} style={{ position: 'relative' }}>
+                <button
+                  data-testid="status-badge"
+                  aria-label="Change project status"
+                  onClick={() => setStatusDropdownOpen((o) => !o)}
+                  disabled={statusSaving}
+                  style={{
+                    fontSize: '10px', fontWeight: 700, padding: '3px 9px', borderRadius: '20px',
+                    background: ss.bg, color: ss.color, border: `1px solid ${ss.border}`,
+                    textTransform: 'uppercase', letterSpacing: '0.05em',
+                    cursor: statusSaving ? 'not-allowed' : 'pointer',
+                    fontFamily: 'inherit', transition: 'all 150ms',
+                  }}
+                >
+                  {project.status}
+                </button>
+                {statusDropdownOpen && (
+                  <div style={{
+                    position: 'absolute', top: 'calc(100% + 6px)', left: 0,
+                    background: '#0f0f1a', border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '10px', padding: '4px', zIndex: 100,
+                    minWidth: '110px', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+                  }}>
+                    {(['active', 'paused', 'archived'] as const).map((s) => {
+                      const st = statusStyle(s);
+                      const isCurrent = project.status.toLowerCase() === s;
+                      return (
+                        <button
+                          key={s}
+                          onClick={() => handleStatusChange(s)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '7px',
+                            width: '100%', padding: '7px 10px', borderRadius: '7px',
+                            background: isCurrent ? st.bg : 'transparent',
+                            border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                            fontSize: '12px', fontWeight: 600,
+                            color: isCurrent ? st.color : '#64748b',
+                            textAlign: 'left', transition: 'all 100ms',
+                          }}
+                          onMouseEnter={(e) => { if (!isCurrent) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
+                          onMouseLeave={(e) => { if (!isCurrent) e.currentTarget.style.background = 'transparent'; }}
+                        >
+                          <span style={{
+                            width: '7px', height: '7px', borderRadius: '50%',
+                            background: st.color, flexShrink: 0,
+                          }} />
+                          {s.charAt(0).toUpperCase() + s.slice(1)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             )}
           </div>
           <button
