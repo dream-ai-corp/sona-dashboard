@@ -125,4 +125,38 @@ test.describe("Projects page", () => {
       test.skip();
     }
   });
+
+  test("project detail page shows Job History section", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const firstCard = page.locator('a[href^="/projects/"]').first();
+    if ((await firstCard.count()) > 0) {
+      await firstCard.click();
+      await page.waitForLoadState("networkidle");
+      // Job History heading must be visible
+      await expect(page.locator("main h2", { hasText: "Job History" })).toBeVisible();
+      // No application error
+      await expect(page.locator("text=Application error")).not.toBeVisible();
+    } else {
+      test.skip();
+    }
+  });
+
+  test("project detail page job history shows job count", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const firstCard = page.locator('a[href^="/projects/"]').first();
+    if ((await firstCard.count()) > 0) {
+      await firstCard.click();
+      await page.waitForLoadState("networkidle");
+      // Should show either "N jobs" count or "No jobs found"
+      const jobCount = page.locator("text=/\\d+ jobs?/");
+      const emptyMsg = page.locator("text=No jobs found for this project.");
+      await expect(jobCount.or(emptyMsg)).toBeVisible({ timeout: 10000 });
+    } else {
+      test.skip();
+    }
+  });
 });
