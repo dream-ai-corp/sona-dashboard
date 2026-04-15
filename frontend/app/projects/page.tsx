@@ -106,7 +106,14 @@ function ProjectCard({ project }: { project: Project }) {
             fontSize: '10px', fontWeight: 700, padding: '3px 9px', borderRadius: '20px', flexShrink: 0,
             background: ss.bg, color: ss.color, border: `1px solid ${ss.border}`,
             textTransform: 'uppercase', letterSpacing: '0.05em',
+            display: 'inline-flex', alignItems: 'center', gap: '5px',
           }}>
+            {project.status?.toLowerCase() === 'active' && (
+              <span className="status-dot-pulse" style={{
+                width: '5px', height: '5px', borderRadius: '50%',
+                background: ss.color, flexShrink: 0,
+              }} />
+            )}
             {project.status}
           </span>
         </div>

@@ -689,8 +689,15 @@ export default function ProjectDetailPage() {
                     textTransform: 'uppercase', letterSpacing: '0.05em',
                     cursor: statusSaving ? 'not-allowed' : 'pointer',
                     fontFamily: 'inherit', transition: 'all 150ms',
+                    display: 'inline-flex', alignItems: 'center', gap: '5px',
                   }}
                 >
+                  {project.status?.toLowerCase() === 'active' && (
+                    <span className="status-dot-pulse" style={{
+                      width: '5px', height: '5px', borderRadius: '50%',
+                      background: ss.color, flexShrink: 0,
+                    }} />
+                  )}
                   {project.status}
                 </button>
                 {statusDropdownOpen && (
