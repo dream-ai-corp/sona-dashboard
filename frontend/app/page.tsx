@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Sidebar from '@/components/Sidebar';
+import SonaChatInput from '@/components/SonaChatInput';
 import StatCard from '@/components/StatCard';
 import {
   Bot,
@@ -271,22 +272,28 @@ export default function Home() {
         <div style={{
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '20px 32px',
+          gap: '20px',
+          padding: '16px 32px',
           borderBottom: '1px solid rgba(255,255,255,0.06)',
           background: 'rgba(15,15,26,0.6)',
           backdropFilter: 'blur(10px)',
           position: 'sticky',
           top: 0,
           zIndex: 40,
+          flexWrap: 'wrap',
         }}>
-          <div>
-            <h1 style={{ fontSize: '22px', fontWeight: 700, color: '#f1f5f9', margin: 0, lineHeight: 1.2 }}>
+          <div style={{ flex: '0 0 auto' }}>
+            <h1 style={{ fontSize: '18px', fontWeight: 700, color: '#f1f5f9', margin: 0, lineHeight: 1.2 }}>
               Sona Dashboard
             </h1>
-            <p style={{ fontSize: '12px', color: '#64748b', margin: '3px 0 0' }}>
+            <p style={{ fontSize: '11px', color: '#64748b', margin: '2px 0 0' }}>
               Real-time AI assistant control panel
             </p>
+          </div>
+
+          {/* Composite chat input: text + image + push-to-talk */}
+          <div style={{ flex: '1 1 420px', minWidth: '280px', maxWidth: '720px' }}>
+            <SonaChatInput sessionId="dashboard" channel="dashboard" compact={true} />
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>

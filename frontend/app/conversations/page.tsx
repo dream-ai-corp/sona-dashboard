@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import PageShell from '@/components/PageShell';
 import { MessageSquare, Trash2 } from 'lucide-react';
+import VoiceTalkButton from '@/components/VoiceTalkButton';
 import { useSSE } from '@/lib/useSSE';
 
 interface ConversationRow {
@@ -113,6 +114,12 @@ export default function ConversationsPage() {
 
       {/* Body */}
       <div style={{ flex: 1, padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+            <span style={{ fontSize: '12px', color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>🎙 Push-to-talk to Sona</span>
+          </div>
+          <VoiceTalkButton sessionId="dashboard-voice" />
+        </div>
         {error && (
           <div style={{
             background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)',
