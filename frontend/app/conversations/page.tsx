@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import PageShell from '@/components/PageShell';
 import { MessageSquare, Trash2 } from 'lucide-react';
 import { useSSE } from '@/lib/useSSE';
@@ -34,6 +34,15 @@ export default function ConversationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
 
+  // Fetch initial history on mount — SSE alone may not flush immediately
+  useEffect(() => {
+    fetch('/api/conversations')
+      .then(r => r.json())
+      .then(data => { if (Array.isArray(data)) setRows(data); })
+      .catch(() => {});
+  }, []);
+
+  // SSE keeps data live after initial load
   useSSE<ConversationRow[]>('/api/conversations/stream', (data) => {
     if (Array.isArray(data)) {
       setRows(data);
@@ -54,9 +63,10 @@ export default function ConversationsPage() {
     }
   };
 
-  // Group by date
+  // Sort newest-first, then group by date
+  const sorted = [...rows].sort((a, b) => b.timestamp - a.timestamp);
   const grouped: { date: string; rows: ConversationRow[] }[] = [];
-  for (const row of rows) {
+  for (const row of sorted) {
     const date = formatDate(row.timestamp);
     const last = grouped[grouped.length - 1];
     if (last && last.date === date) {

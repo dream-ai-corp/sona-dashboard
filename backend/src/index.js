@@ -62,7 +62,7 @@ const upsertJob = db.prepare(`
   VALUES (@id, @goal, @status, @project, @started_at, @completed_at, @result, @exit_code, @mtime)
   ON CONFLICT(id) DO UPDATE SET
     goal       = COALESCE(excluded.goal, jobs.goal),
-    status     = excluded.status,
+    status     = CASE WHEN jobs.status IN ('done', 'failed', 'error') THEN jobs.status ELSE excluded.status END,
     project    = COALESCE(excluded.project, jobs.project),
     started_at = COALESCE(excluded.started_at, jobs.started_at),
     completed_at = COALESCE(excluded.completed_at, jobs.completed_at),
@@ -177,8 +177,27 @@ function parseJobDir(jobId, dirPath, project) {
     } catch { /* malformed result.json */ }
   }
 
-  // No result.json — running or orphaned
+  // No result.json — check PID, then fall back to mtime orphan detection
   if (goal) {
+    // PID check: if pid.txt exists and process is dead, mark as error immediately
+    const pidPath = path.join(dirPath, "pid.txt");
+    if (fs.existsSync(pidPath)) {
+      try {
+        const pid = parseInt(fs.readFileSync(pidPath, "utf-8").trim(), 10);
+        if (pid > 0) {
+          let alive = false;
+          try { process.kill(pid, 0); alive = true; } catch {}
+          if (!alive) {
+            return {
+              id: jobId, goal, status: "error",
+              project: project || null, started_at: null, completed_at: null,
+              result: "Process exited without writing result.json", exit_code: null, mtime,
+            };
+          }
+        }
+      } catch {}
+    }
+    // Mtime-based orphan fallback (no pid.txt or PID appeared alive)
     const ORPHAN_MS = 10 * 60 * 1000;
     const logPath = path.join(dirPath, "log.ndjson");
     let logMtime = 0;
@@ -234,6 +253,18 @@ function syncFromFilesystem() {
   }
 
   if (jobs.length > 0) syncJob(jobs);
+
+  // Mark any 'running' jobs not found on filesystem as error (zombie jobs)
+  const foundIds = new Set(jobs.map(j => j.id));
+  const zombies = db.prepare("SELECT id FROM jobs WHERE status = 'running'").all();
+  const markError = db.prepare("UPDATE jobs SET status = 'error', result = 'Job directory no longer exists' WHERE id = ?");
+  for (const z of zombies) {
+    if (!foundIds.has(z.id)) {
+      markError.run(z.id);
+      console.log(`[sync] zombie job ${z.id} marked error`);
+    }
+  }
+
   console.log(`[sync] upserted ${jobs.length} jobs`);
   // Broadcast new job state to all connected SSE clients
   broadcastJobs();
