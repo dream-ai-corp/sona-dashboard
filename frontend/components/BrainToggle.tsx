@@ -9,7 +9,7 @@ export default function BrainToggle() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState('');
 
-  const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://72.60.185.57:8080';
+  const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
 
   useSSE<StatusPayload>('/api/status/stream', (data) => {
     if (!data?.brain) return;

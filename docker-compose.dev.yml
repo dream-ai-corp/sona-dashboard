@@ -6,10 +6,9 @@ services:
       dockerfile: Dockerfile.dev
     volumes:
       - ./frontend:/app
-      - /app/node_modules
       - /home/beniben/sona-workspace:/home/beniben/sona-workspace
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:3011
+      - NEXT_PUBLIC_API_URL=
       - SONA_API_URL=http://host.docker.internal:8080
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -20,7 +19,6 @@ services:
     command: npm run dev
     volumes:
       - ./backend:/app
-      - /app/node_modules
     environment:
       - PORT=3011
       - SONA_API_URL=http://host.docker.internal:8080

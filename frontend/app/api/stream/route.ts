@@ -1,6 +1,6 @@
 export const dynamic = 'force-dynamic';
 
-const SONA_API = process.env.SONA_API_URL ?? 'http://host.docker.internal:8080';
+const SONA_API = process.env.SONA_API_URL ?? '';
 
 export async function GET(req: Request) {
   const encoder = new TextEncoder();

@@ -395,7 +395,7 @@ export default function AgentsPage() {
     if (!confirm('Kill all running jobs?')) return;
     setKillingAll(true);
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://host.docker.internal:8080';
+      const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
       await fetch(`${apiUrl}/api/jobs/killall`, { method: 'POST' }).catch(() => {});
       await fetchJobs();
     } finally {

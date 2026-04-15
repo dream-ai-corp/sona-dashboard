@@ -7,7 +7,7 @@ services:
     ports:
       - "3010:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:3011
+      - NEXT_PUBLIC_API_URL=
       - SONA_API_URL=http://host.docker.internal:8080
       - BACKEND_URL=http://backend:3011
     extra_hosts:
