@@ -1,10 +1,9 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useState } from 'react';
 import PageShell from '@/components/PageShell';
-import {
-  Server, HardDrive, Cpu, MemoryStick, RefreshCw, Zap, Activity,
-} from 'lucide-react';
+import { Server, HardDrive, Zap } from 'lucide-react';
+import { useSSE } from '@/lib/useSSE';
 
 interface DaemonData {
   enabled?: boolean;
@@ -15,19 +14,7 @@ interface DaemonData {
   error?: string;
 }
 
-interface BrainVoice {
-  brain: string;
-  voice: string;
-}
-
-const SERVICES = [
-  { name: 'sona-agent', endpoint: '/api/system' },
-  { name: 'sona-dashboard', endpoint: null },
-  { name: 'whisper-server', endpoint: null },
-  { name: 'kokoro-server', endpoint: null },
-  { name: 'sona-host-bridge', endpoint: null },
-  { name: 'ssh-socks-relay', endpoint: null },
-];
+interface StatusPayload { daemon?: DaemonData; brain?: any; voice?: any; }
 
 function ServiceRow({ name, status }: { name: string; status: 'up' | 'down' | 'unknown' }) {
   const color = status === 'up' ? '#4ade80' : status === 'down' ? '#f87171' : '#64748b';
@@ -45,32 +32,20 @@ function ServiceRow({ name, status }: { name: string; status: 'up' | 'down' | 'u
 
 export default function SystemPage() {
   const [daemon, setDaemon] = useState<DaemonData | null>(null);
-  const [bv, setBv] = useState<BrainVoice>({ brain: '...', voice: '...' });
-  const [loading, setLoading] = useState(false);
+  const [brain, setBrain] = useState('...');
+  const [voice, setVoice] = useState('...');
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
-    try {
-      const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? 'http://72.60.185.57:8080';
-      const [sysRes, brainRes, voiceRes] = await Promise.allSettled([
-        fetch('/api/system').then(r => r.json()),
-        fetch(`${apiUrl}/api/brain`).then(r => r.json()),
-        fetch(`${apiUrl}/api/voice`).then(r => r.json()),
-      ]);
-      if (sysRes.status === 'fulfilled') setDaemon(sysRes.value);
-      const brain = brainRes.status === 'fulfilled' ? (brainRes.value?.mode ?? brainRes.value?.brain ?? 'n/a') : 'n/a';
-      const voice = voiceRes.status === 'fulfilled' ? (voiceRes.value?.language ?? voiceRes.value?.voice ?? 'n/a') : 'n/a';
-      setBv({ brain, voice });
-    } finally {
-      setLoading(false);
+  useSSE<StatusPayload>('/api/status/stream', (data) => {
+    if (data?.daemon) setDaemon(data.daemon);
+    if (data?.brain) {
+      const b = data.brain;
+      setBrain(b?.mode ?? b?.brain ?? 'n/a');
     }
-  }, []);
-
-  useEffect(() => {
-    fetchData();
-    const id = setInterval(fetchData, 10000);
-    return () => clearInterval(id);
-  }, [fetchData]);
+    if (data?.voice) {
+      const v = data.voice;
+      setVoice((v?.language ?? v?.voice ?? 'n/a').toUpperCase());
+    }
+  });
 
   const daemonOn = daemon?.enabled ?? daemon?.running ?? false;
   const lastTick = daemon?.lastTick
@@ -87,8 +62,8 @@ export default function SystemPage() {
     ['Daemon interval', daemon?.intervalMs ? `${daemon.intervalMs / 1000}s` : '3 min'],
     ['Max concurrent jobs', String(daemon?.maxConcurrent ?? 2)],
     ['Last tick', lastTick],
-    ['Brain mode', bv.brain],
-    ['Voice language', bv.voice.toUpperCase()],
+    ['Brain mode', brain],
+    ['Voice language', voice],
   ];
 
   const sonaAgentStatus: 'up' | 'down' | 'unknown' = daemon?.error ? 'down' : daemon ? 'up' : 'unknown';
@@ -104,23 +79,8 @@ export default function SystemPage() {
       }}>
         <div>
           <h1 style={{ fontSize: '22px', fontWeight: 700, color: '#f1f5f9', margin: 0, lineHeight: 1.2 }}>System</h1>
-          <p style={{ fontSize: '12px', color: '#64748b', margin: '3px 0 0' }}>Host info, services, and daemon status</p>
+          <p style={{ fontSize: '12px', color: '#64748b', margin: '3px 0 0' }}>Host info, services, and daemon status · live via SSE</p>
         </div>
-        <button
-          onClick={fetchData}
-          disabled={loading}
-          style={{
-            display: 'flex', alignItems: 'center', gap: '6px',
-            padding: '7px 14px', borderRadius: '10px',
-            border: '1px solid rgba(124,58,237,0.3)', background: 'rgba(124,58,237,0.1)',
-            color: '#a78bfa', fontSize: '12px', fontWeight: 600,
-            cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.6 : 1,
-            fontFamily: 'inherit',
-          }}
-        >
-          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
       </div>
 
       {/* Body */}

@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useState } from 'react';
 import PageShell from '@/components/PageShell';
-import { MessageSquare, RefreshCw, Trash2 } from 'lucide-react';
+import { MessageSquare, Trash2 } from 'lucide-react';
+import { useSSE } from '@/lib/useSSE';
 
 interface ConversationRow {
   id: number;
@@ -30,75 +31,22 @@ function formatDate(ts: number): string {
 
 export default function ConversationsPage() {
   const [rows, setRows] = useState<ConversationRow[]>([]);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
-  const [connected, setConnected] = useState(false);
-  const esRef = useRef<EventSource | null>(null);
 
-  const connectSSE = useCallback(() => {
-    if (esRef.current) {
-      esRef.current.close();
-    }
-
-    const es = new EventSource('/api/conversations/stream');
-    esRef.current = es;
-
-    es.onopen = () => {
-      setConnected(true);
+  useSSE<ConversationRow[]>('/api/conversations/stream', (data) => {
+    if (Array.isArray(data)) {
+      setRows(data);
       setError(null);
-    };
-
-    es.onmessage = (evt) => {
-      try {
-        const data = JSON.parse(evt.data);
-        if (Array.isArray(data)) {
-          setRows(data);
-          setLoading(false);
-        }
-      } catch {
-        // ignore malformed frames
-      }
-    };
-
-    es.onerror = () => {
-      setConnected(false);
-      es.close();
-      esRef.current = null;
-      // Reconnect after 3 seconds
-      setTimeout(connectSSE, 3000);
-    };
-  }, []);
-
-  useEffect(() => {
-    connectSSE();
-    return () => {
-      esRef.current?.close();
-      esRef.current = null;
-    };
-  }, [connectSSE]);
-
-  const handleManualRefresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/conversations', { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setRows(Array.isArray(data) ? data : []);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Failed to load');
-    } finally {
-      setLoading(false);
     }
-  }, []);
+  });
 
   const handleClear = async () => {
     if (!confirm('Clear all conversations? This cannot be undone.')) return;
     setClearing(true);
     try {
       await fetch('/api/conversations', { method: 'DELETE' });
-      setRows([]);
+      // SSE will push the empty list automatically
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to clear');
     } finally {
@@ -130,10 +78,7 @@ export default function ConversationsPage() {
         <div>
           <h1 style={{ fontSize: '22px', fontWeight: 700, color: '#f1f5f9', margin: 0 }}>Conversations</h1>
           <p style={{ fontSize: '12px', color: '#64748b', margin: '3px 0 0' }}>
-            {rows.length} message{rows.length !== 1 ? 's' : ''} · persisted in SQLite ·{' '}
-            <span style={{ color: connected ? '#4ade80' : '#f87171' }}>
-              {connected ? 'live' : 'reconnecting…'}
-            </span>
+            {rows.length} message{rows.length !== 1 ? 's' : ''} · live via SSE
           </p>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
@@ -153,21 +98,6 @@ export default function ConversationsPage() {
               Clear All
             </button>
           )}
-          <button
-            onClick={handleManualRefresh}
-            disabled={loading}
-            style={{
-              display: 'flex', alignItems: 'center', gap: '6px',
-              padding: '7px 14px', borderRadius: '10px',
-              border: '1px solid rgba(124,58,237,0.3)',
-              background: 'rgba(124,58,237,0.1)', color: '#a78bfa',
-              fontSize: '12px', fontWeight: 600,
-              cursor: loading ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
-            }}
-          >
-            <RefreshCw size={13} style={{ animation: loading ? 'spin 1s linear infinite' : 'none' }} />
-            Refresh
-          </button>
         </div>
       </div>
 
@@ -182,10 +112,10 @@ export default function ConversationsPage() {
           </div>
         )}
 
-        {!loading && rows.length === 0 && !error && (
+        {rows.length === 0 && !error && (
           <div style={{ textAlign: 'center', color: '#334155', padding: '60px 0', fontSize: '14px' }}>
             <MessageSquare size={36} color="#1e2535" style={{ margin: '0 auto 12px', display: 'block' }} />
-            No conversations yet. Messages from Discord will appear here.
+            No conversations yet. Messages from Discord will appear here in real time.
           </div>
         )}
 
