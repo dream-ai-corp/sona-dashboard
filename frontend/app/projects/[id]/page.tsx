@@ -18,6 +18,10 @@ import {
   Loader2,
   Calendar,
   Target,
+  Clock,
+  AlertCircle,
+  CheckCircle2,
+  RotateCcw,
 } from 'lucide-react';
 
 interface Service {
@@ -51,6 +55,16 @@ interface Sprint {
   startDate: string;
   endDate: string;
   status: 'planning' | 'active' | 'completed';
+}
+
+interface Job {
+  id: string;
+  goal?: string;
+  status: string;
+  startedAt?: number;
+  completedAt?: number;
+  elapsedSec?: number;
+  mtime?: number;
 }
 
 function statusStyle(status: string) {
@@ -369,6 +383,10 @@ export default function ProjectDetailPage() {
   });
   const [sprintSaving, setSprintSaving] = useState(false);
 
+  // Jobs history state
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [loadingJobs, setLoadingJobs] = useState(true);
+
   // Status badge dropdown
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
   const [statusSaving, setStatusSaving] = useState(false);
@@ -421,12 +439,26 @@ export default function ProjectDetailPage() {
     }
   }, [id]);
 
+  const fetchJobs = useCallback(async () => {
+    setLoadingJobs(true);
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/jobs`);
+      const data = await res.json() as { jobs?: Job[] };
+      setJobs(data.jobs ?? []);
+    } catch {
+      setJobs([]);
+    } finally {
+      setLoadingJobs(false);
+    }
+  }, [id]);
+
   useEffect(() => {
     fetchProject();
     fetchBacklog();
     fetchBrief();
     fetchSprints();
-  }, [fetchProject, fetchBacklog, fetchBrief, fetchSprints]);
+    fetchJobs();
+  }, [fetchProject, fetchBacklog, fetchBrief, fetchSprints, fetchJobs]);
 
   const handleToggle = async (item: BacklogItem) => {
     setSaving(true);
@@ -999,6 +1031,123 @@ export default function ProjectDetailPage() {
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+
+          {/* Job History */}
+          <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Job History</h2>
+                {loadingJobs && <Loader2 size={13} color="#a78bfa" className="animate-spin" />}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '11px', color: '#475569' }}>{jobs.length} job{jobs.length !== 1 ? 's' : ''}</span>
+                <button
+                  onClick={fetchJobs}
+                  disabled={loadingJobs}
+                  style={{
+                    background: 'none', border: 'none', cursor: loadingJobs ? 'not-allowed' : 'pointer',
+                    color: '#334155', padding: '4px', borderRadius: '6px', display: 'flex',
+                    alignItems: 'center', transition: 'color 150ms',
+                    opacity: loadingJobs ? 0.4 : 1,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#a78bfa')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = '#334155')}
+                  title="Refresh jobs"
+                >
+                  <RotateCcw size={13} />
+                </button>
+              </div>
+            </div>
+
+            {loadingJobs ? (
+              <div style={{ textAlign: 'center', padding: '24px 0', color: '#334155', fontSize: '13px' }}>
+                Loading jobs…
+              </div>
+            ) : jobs.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '24px 0', color: '#334155', fontSize: '13px' }}>
+                No jobs found for this project.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {jobs.map((job) => {
+                  const isDone = job.status === 'done' || job.status === 'completed';
+                  const isRunning = job.status === 'running' || job.status === 'in_progress';
+                  const isError = !isDone && !isRunning;
+                  const statusColor = isDone ? '#4ade80' : isRunning ? '#38bdf8' : '#f87171';
+                  const statusBg = isDone ? 'rgba(34,197,94,0.1)' : isRunning ? 'rgba(56,189,248,0.1)' : 'rgba(248,113,113,0.1)';
+                  const statusBorder = isDone ? 'rgba(34,197,94,0.25)' : isRunning ? 'rgba(56,189,248,0.25)' : 'rgba(248,113,113,0.25)';
+                  const StatusIcon = isDone ? CheckCircle2 : isRunning ? Loader2 : AlertCircle;
+
+                  const finishedAt = job.completedAt ?? job.mtime;
+                  const timeAgo = finishedAt ? (() => {
+                    const diffMs = Date.now() - finishedAt;
+                    const diffMin = Math.floor(diffMs / 60000);
+                    const diffHr = Math.floor(diffMin / 60);
+                    const diffDay = Math.floor(diffHr / 24);
+                    if (diffDay > 0) return `${diffDay}d ago`;
+                    if (diffHr > 0) return `${diffHr}h ago`;
+                    if (diffMin > 0) return `${diffMin}m ago`;
+                    return 'just now';
+                  })() : null;
+
+                  return (
+                    <div
+                      key={job.id}
+                      style={{
+                        display: 'flex', alignItems: 'flex-start', gap: '12px',
+                        padding: '12px 14px', borderRadius: '10px',
+                        background: 'rgba(255,255,255,0.025)',
+                        border: '1px solid rgba(255,255,255,0.07)',
+                        transition: 'border-color 150ms',
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.07)')}
+                    >
+                      <StatusIcon
+                        size={15}
+                        color={statusColor}
+                        style={{ flexShrink: 0, marginTop: '1px' }}
+                        className={isRunning ? 'animate-spin' : undefined}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontSize: '12px', color: '#cbd5e1', lineHeight: 1.5,
+                          display: '-webkit-box', WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                          marginBottom: '5px',
+                        }}>
+                          {job.goal ?? '(no goal)'}
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <code style={{
+                            fontSize: '10px', color: '#475569',
+                            fontFamily: 'monospace',
+                          }}>
+                            {job.id.slice(0, 8)}
+                          </code>
+                          <span style={{
+                            fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '20px',
+                            background: statusBg, color: statusColor, border: `1px solid ${statusBorder}`,
+                            textTransform: 'uppercase', letterSpacing: '0.04em',
+                          }}>
+                            {job.status}
+                          </span>
+                          {job.elapsedSec != null && (
+                            <span style={{ fontSize: '10px', color: '#475569', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                              <Clock size={9} /> {job.elapsedSec}s
+                            </span>
+                          )}
+                          {timeAgo && (
+                            <span style={{ fontSize: '10px', color: '#334155' }}>{timeAgo}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
