@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Sidebar from '@/components/Sidebar';
+import SonaFloatingChat from '@/components/SonaFloatingChat';
 import SonaChatInput from '@/components/SonaChatInput';
 import StatCard from '@/components/StatCard';
 import {
@@ -269,7 +270,7 @@ export default function Home() {
       <main style={{ flex: 1, marginLeft: '240px', display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
 
         {/* ── Top bar ── */}
-        <div style={{
+        <div className="sona-page-topbar" style={{
           display: 'flex',
           alignItems: 'center',
           gap: '20px',
@@ -291,8 +292,8 @@ export default function Home() {
             </p>
           </div>
 
-          {/* Composite chat input: text + image + push-to-talk */}
-          <div style={{ flex: '1 1 420px', minWidth: '280px', maxWidth: '720px' }}>
+          {/* Composite chat input — desktop only; mobile uses floating chat */}
+          <div className="sona-topbar-chat" style={{ flex: '1 1 420px', minWidth: '280px', maxWidth: '720px' }}>
             <SonaChatInput sessionId="dashboard" channel="dashboard" compact={true} />
           </div>
 
@@ -564,6 +565,13 @@ export default function Home() {
           Sona Dashboard · live via SSE · {now}
         </div>
       </main>
+      <SonaFloatingChat />
+      <style jsx global>{`
+        @media (max-width: 768px) {
+          .sona-topbar-chat { display: none !important; }
+          .sona-topbar-mobile-offset { padding-left: 56px !important; }
+        }
+      `}</style>
     </div>
   );
 }

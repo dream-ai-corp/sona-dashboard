@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState, useCallback } from 'react';
 import {
+  Menu,
   LayoutDashboard,
   Bot,
   Briefcase,
@@ -237,10 +238,58 @@ export default function Sidebar() {
       .catch(() => {});
   }, []);
 
+  const [mobileOpen, setMobileOpen] = useState(false)
+
+  // Close drawer on route change
+  useEffect(() => { setMobileOpen(false) }, [pathname])
+
   return (
-    <aside
-      style={{
-        width: '240px',
+    <>
+      {/* Mobile hamburger (only visible < 768px) */}
+      <button
+        onClick={() => setMobileOpen((v) => !v)}
+        aria-label="Toggle menu"
+        className="sona-mobile-hamburger"
+        style={{
+          position: 'fixed',
+          top: '14px',
+          left: '14px',
+          width: '44px',
+          height: '44px',
+          borderRadius: '12px',
+          background: 'rgba(15,15,26,0.92)',
+          border: '1px solid rgba(124,58,237,0.3)',
+          color: '#c4b5fd',
+          cursor: 'pointer',
+          zIndex: 70,
+          display: 'none',
+          alignItems: 'center',
+          justifyContent: 'center',
+          backdropFilter: 'blur(12px)',
+        }}
+      >
+        <Menu size={20} />
+      </button>
+
+      {/* Mobile backdrop */}
+      {mobileOpen && (
+        <div
+          onClick={() => setMobileOpen(false)}
+          className="sona-mobile-backdrop"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.5)',
+            zIndex: 50,
+            display: 'none',
+          }}
+        />
+      )}
+
+      <aside
+        className={`sona-sidebar ${mobileOpen ? 'sona-sidebar-mobile-open' : ''}`}
+        style={{
+          width: '240px',
         minHeight: '100vh',
         background: 'rgba(15, 15, 26, 0.95)',
         borderRight: '1px solid rgba(255,255,255,0.06)',
@@ -250,7 +299,7 @@ export default function Sidebar() {
         left: 0,
         top: 0,
         bottom: 0,
-        zIndex: 50,
+        zIndex: 60,
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
         overflowY: 'auto',
@@ -397,5 +446,21 @@ export default function Sidebar() {
         </div>
       </div>
     </aside>
+    <style jsx global>{`
+      @media (max-width: 768px) {
+        .sona-mobile-hamburger { display: flex !important; }
+        .sona-sidebar {
+          transform: translateX(-100%);
+          transition: transform 280ms ease;
+          box-shadow: 4px 0 24px rgba(0,0,0,0.4);
+        }
+        .sona-sidebar-mobile-open { transform: translateX(0); }
+        .sona-mobile-backdrop { display: block !important; }
+        main { margin-left: 0 !important; }
+        /* Reserve space for the floating hamburger on each page top bar */
+        .sona-page-topbar { padding-left: 72px !important; }
+      }
+    `}</style>
+    </>
   );
 }

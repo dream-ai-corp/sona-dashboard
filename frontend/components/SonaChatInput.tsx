@@ -42,6 +42,20 @@ export default function SonaChatInput({ sessionId = 'dashboard', channel = 'dash
     mediaRecorderRef.current = null;
     chunksRef.current = [];
   }, []);
+  const primeAudioIfNeeded = useCallback(() => {
+    // iOS Safari blocks HTMLAudioElement.play() unless it was triggered by
+    // a user gesture. We prime the element with a silent WAV inside the
+    // initial user interaction so later programmatic .play() calls work.
+    const a = audioRef.current
+    if (!a || (a as unknown as { __sonaPrimed?: boolean }).__sonaPrimed) return
+    try {
+      a.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA"
+      const p = a.play()
+      if (p && typeof p.then === "function") p.catch(() => {})
+      ;(a as unknown as { __sonaPrimed?: boolean }).__sonaPrimed = true
+    } catch {}
+  }, [])
+
 
   const fadeStatus = useCallback(() => {
     setTimeout(() => { setStatus('idle'); setError(''); }, 400);
@@ -108,6 +122,7 @@ export default function SonaChatInput({ sessionId = 'dashboard', channel = 'dash
 
   // ── Voice record ────────────────────────────────────
   const startRecording = useCallback(async () => {
+    primeAudioIfNeeded()
     setError('');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -178,7 +193,7 @@ export default function SonaChatInput({ sessionId = 'dashboard', channel = 'dash
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0, flex: 1 }}>
-      <audio ref={audioRef} style={{ display: 'none' }} />
+      <audio ref={audioRef} playsInline preload="auto" style={{ display: 'none' }} />
       <input
         ref={fileInputRef}
         type="file"

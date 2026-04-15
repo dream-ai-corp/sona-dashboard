@@ -80,7 +80,7 @@ export default function ConversationsPage() {
   return (
     <PageShell>
       {/* Header */}
-      <div style={{
+      <div className="sona-page-topbar" style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '20px 32px', borderBottom: '1px solid rgba(255,255,255,0.06)',
         background: 'rgba(15,15,26,0.6)', backdropFilter: 'blur(10px)',

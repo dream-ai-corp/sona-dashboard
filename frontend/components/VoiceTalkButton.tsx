@@ -34,8 +34,23 @@ export default function VoiceTalkButton({ sessionId = 'dashboard-voice' }: { ses
     mediaRecorderRef.current = null;
     chunksRef.current = [];
   }, []);
+  const primeAudioIfNeeded = useCallback(() => {
+    // iOS Safari blocks HTMLAudioElement.play() unless it was triggered by
+    // a user gesture. We prime the element with a silent WAV inside the
+    // initial user interaction so later programmatic .play() calls work.
+    const a = audioRef.current
+    if (!a || (a as unknown as { __sonaPrimed?: boolean }).__sonaPrimed) return
+    try {
+      a.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA"
+      const p = a.play()
+      if (p && typeof p.then === "function") p.catch(() => {})
+      ;(a as unknown as { __sonaPrimed?: boolean }).__sonaPrimed = true
+    } catch {}
+  }, [])
+
 
   const startRecording = useCallback(async () => {
+    primeAudioIfNeeded()
     setError('');
     setTranscript('');
     setReply('');
@@ -146,7 +161,7 @@ export default function VoiceTalkButton({ sessionId = 'dashboard-voice' }: { ses
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-      <audio ref={audioRef} style={{ display: 'none' }} />
+      <audio ref={audioRef} playsInline preload="auto" style={{ display: 'none' }} />
       <button
         onClick={toggle}
         disabled={status === 'sending' || status === 'playing'}

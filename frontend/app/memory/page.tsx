@@ -45,7 +45,7 @@ export default function MemoryPage() {
 
   return (
     <PageShell>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 32px", borderBottom: "1px solid rgba(255,255,255,0.06)", background: "rgba(15,15,26,0.6)", backdropFilter: "blur(10px)", position: "sticky", top: 0, zIndex: 40 }}>
+      <div className="sona-page-topbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 32px", borderBottom: "1px solid rgba(255,255,255,0.06)", background: "rgba(15,15,26,0.6)", backdropFilter: "blur(10px)", position: "sticky", top: 0, zIndex: 40 }}>
         <div>
           <h1 style={{ fontSize: "22px", fontWeight: 700, color: "#f1f5f9", margin: 0 }}>Memory</h1>
           <p style={{ fontSize: "12px", color: "#64748b", margin: "3px 0 0" }}>Brain config and memory file locations</p>
