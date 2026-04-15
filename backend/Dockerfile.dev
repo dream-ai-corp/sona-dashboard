@@ -1,0 +1,29 @@
+# Build context must be the monorepo root
+FROM node:20-alpine
+
+RUN apk add --no-cache openssl
+
+WORKDIR /app
+
+# Shared package (source-mounted in dev, so just install deps + build once)
+COPY shared/package*.json shared/
+COPY shared/tsconfig.json shared/
+COPY shared/src shared/src
+RUN cd shared && npm install && npm run build
+
+# Backend deps
+COPY backend/package*.json backend/
+RUN cd backend && npm install
+
+COPY backend/prisma backend/prisma
+COPY backend/tsconfig.json backend/
+COPY backend/src backend/src
+
+RUN cd backend && npx prisma generate
+
+WORKDIR /app/backend
+
+EXPOSE 3001
+
+# Default command overridden by docker-compose.dev.yml
+CMD ["npm", "run", "dev"]

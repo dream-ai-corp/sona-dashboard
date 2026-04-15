@@ -1,14 +1,16 @@
 # Dependencies
 node_modules/
-/.pnp
-.pnp.js
 
 # Next.js build output
-/.next/
+.next/
 /out/
 
+# Backend build
+dist/
+backend/dist/
+
 # Production build
-/build
+build/
 
 # Environment variables
 .env
@@ -42,3 +44,10 @@ Thumbs.db
 
 # Misc
 *.pem
+
+# Playwright
+test-results/
+playwright-report/
+
+# Prisma generated
+shared/dist/
