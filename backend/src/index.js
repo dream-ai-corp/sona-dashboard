@@ -5,6 +5,9 @@ const fs = require("fs");
 const path = require("path");
 const cron = require("node-cron");
 const fetch = require("node-fetch");
+const { randomUUID } = require("crypto");
+const TimeMatcher = require("node-cron/src/time-matcher");
+const { runDueJobs } = require("./scheduler.js");
 
 const app = express();
 const PORT = process.env.PORT || 3011;
@@ -54,6 +57,19 @@ db.exec(`
     completed_at INTEGER,
     job_id TEXT REFERENCES jobs(id)
   );
+
+  CREATE TABLE IF NOT EXISTS recurring_jobs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    schedule TEXT NOT NULL,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_run_at INTEGER,
+    last_status TEXT,
+    next_run_at INTEGER,
+    created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
+  );
 `);
 
 // Prepared statements
@@ -91,7 +107,7 @@ function broadcastJobs() {
 function broadcastConversations() {
   if (conversationSseClients.size === 0) return;
   const rows = db.prepare(
-    "SELECT * FROM conversations ORDER BY timestamp ASC LIMIT 200"
+    "SELECT * FROM conversations ORDER BY timestamp DESC LIMIT 200"
   ).all();
   for (const res of conversationSseClients) sseWrite(res, rows);
 }
@@ -179,24 +195,12 @@ function parseJobDir(jobId, dirPath, project) {
 
   // No result.json — check PID, then fall back to mtime orphan detection
   if (goal) {
-    // PID check: if pid.txt exists and process is dead, mark as error immediately
-    const pidPath = path.join(dirPath, "pid.txt");
-    if (fs.existsSync(pidPath)) {
-      try {
-        const pid = parseInt(fs.readFileSync(pidPath, "utf-8").trim(), 10);
-        if (pid > 0) {
-          let alive = false;
-          try { process.kill(pid, 0); alive = true; } catch {}
-          if (!alive) {
-            return {
-              id: jobId, goal, status: "error",
-              project: project || null, started_at: null, completed_at: null,
-              result: "Process exited without writing result.json", exit_code: null, mtime,
-            };
-          }
-        }
-      } catch {}
-    }
+    // NOTE: the former PID liveness check (process.kill(pid, 0)) was removed
+    // because it runs inside the dashboard-backend docker container, which has
+    // its OWN PID namespace and cannot see host PIDs. The check always returned
+    // "dead" and caused running jobs to be mis-marked as error between the
+    // moment they started and the moment result.json appeared on disk. The
+    // mtime-based orphan fallback below is the authoritative liveness signal.
     // Mtime-based orphan fallback (no pid.txt or PID appeared alive)
     const ORPHAN_MS = 10 * 60 * 1000;
     const logPath = path.join(dirPath, "log.ndjson");
@@ -367,6 +371,21 @@ app.patch("/api/jobs/:id", (req, res) => {
   db.prepare(`UPDATE jobs SET status=?, completed_at=?, result=?, mtime=? WHERE id=?`)
     .run(status, completed_at || Date.now(), result ? JSON.stringify(result) : null,
          Date.now(), req.params.id);
+
+  // Propagate completion back to the recurring job that spawned this one
+  if (status !== "running") {
+    const rj = db
+      .prepare("SELECT id FROM recurring_jobs WHERE current_job_id = ?")
+      .get(req.params.id);
+    if (rj) {
+      const finalStatus =
+        status === "done" || status === "completed" ? "done" : "error";
+      db.prepare(
+        "UPDATE recurring_jobs SET last_status = ?, current_job_id = NULL WHERE id = ?"
+      ).run(finalStatus, rj.id);
+    }
+  }
+
   broadcastJobs();
   res.json({ ok: true });
 });
@@ -406,7 +425,7 @@ app.get("/api/agents", (_req, res) => {
 // ── Conversations ─────────────────────────────────────────────────────────────
 app.get("/api/conversations", (_req, res) => {
   const rows = db.prepare(
-    "SELECT * FROM conversations ORDER BY timestamp ASC LIMIT 200"
+    "SELECT * FROM conversations ORDER BY timestamp DESC LIMIT 200"
   ).all();
   res.json(rows);
 });
@@ -415,7 +434,7 @@ app.get("/api/conversations", (_req, res) => {
 app.get("/api/conversations/stream", (req, res) => {
   sseHeaders(res);
   const rows = db.prepare(
-    "SELECT * FROM conversations ORDER BY timestamp ASC LIMIT 200"
+    "SELECT * FROM conversations ORDER BY timestamp DESC LIMIT 200"
   ).all();
   sseWrite(res, rows);
   addSseClient(conversationSseClients, res, req);
@@ -541,6 +560,74 @@ app.get("/api/projects", (_req, res) => {
     }
   }
   res.json({ projects });
+});
+
+app.post("/api/projects", (req, res) => {
+  const { name, description, features } = req.body ?? {};
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!slug) return res.status(400).json({ error: "invalid name" });
+  if (slug.includes('..')) return res.status(400).json({ error: "invalid name" });
+
+  const dir = path.join(PROJECTS_DIR, slug);
+  if (fs.existsSync(dir)) {
+    return res.status(409).json({ error: `project "${slug}" already exists` });
+  }
+
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+
+    // project.json
+    const projectJson = {
+      name: name.trim(),
+      description: description?.trim() || undefined,
+      status: 'active',
+      created: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify(projectJson, null, 2) + '\n', 'utf-8');
+
+    // briefing.md
+    const featuresText = features?.trim()
+      ? features.trim().split('\n').filter(Boolean).map(l => `- ${l.trim()}`).join('\n')
+      : '- TBD';
+    const briefing = `# ${name.trim()} — Briefing
+
+## Description
+${description?.trim() || 'TBD'}
+
+## Key Features / Goals
+${featuresText}
+
+## Context
+Created: ${new Date().toISOString()}
+
+## Acceptance Criteria
+- [ ] TBD
+
+## Out of Scope
+- TBD
+`;
+    fs.writeFileSync(path.join(dir, 'briefing.md'), briefing, 'utf-8');
+
+    // backlog.md
+    const backlog = `# ${name.trim()} — Backlog
+
+## In Progress
+- [ ] Define acceptance criteria (see briefing.md)
+
+## To Do
+- [ ] TBD
+
+## Done
+`;
+    fs.writeFileSync(path.join(dir, 'backlog.md'), backlog, 'utf-8');
+
+    res.status(201).json({ project: readProjectMeta(slug) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get("/api/projects/:name", (req, res) => {
@@ -745,6 +832,14 @@ app.delete("/api/projects/:name/sprints/:sprintId", (req, res) => {
 });
 
 // ── Project brief ─────────────────────────────────────────────────────────────
+app.get("/api/projects/:name/briefing", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const briefingPath = path.join(PROJECTS_DIR, name, "briefing.md");
+  const content = fs.existsSync(briefingPath) ? fs.readFileSync(briefingPath, "utf-8") : '';
+  res.json({ content });
+});
+
 app.get("/api/projects/:name/brief", (req, res) => {
   const name = decodeURIComponent(req.params.name);
   if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
@@ -835,12 +930,241 @@ app.get("/api/activity/stream", (req, res) => {
   } catch { /* fs.watch not supported */ }
 });
 
+// ── Recurring Jobs ────────────────────────────────────────────────────────────
+
+// Schema migrations — add columns that may not exist in older DB files
+for (const col of [
+  "ALTER TABLE recurring_jobs ADD COLUMN schedule_type TEXT NOT NULL DEFAULT 'custom'",
+  "ALTER TABLE recurring_jobs ADD COLUMN start_time TEXT",
+  "ALTER TABLE recurring_jobs ADD COLUMN end_time TEXT",
+  "ALTER TABLE recurring_jobs ADD COLUMN days_of_week TEXT",
+  // tracks the currently in-flight job spawned by this recurring job
+  "ALTER TABLE recurring_jobs ADD COLUMN current_job_id TEXT",
+]) {
+  try { db.exec(col); } catch { /* column already exists */ }
+}
+
+/**
+ * Compute the next timestamp (ms) at which a cron expression will fire.
+ * Uses node-cron's internal TimeMatcher — no extra dependency needed.
+ * Iterates minute-by-minute up to 7 days ahead; returns null on any error.
+ */
+function computeNextRun(schedule, timezone = "UTC") {
+  try {
+    const matcher = new TimeMatcher(schedule, timezone);
+    // Start from the top of the next minute
+    const candidate = new Date();
+    candidate.setSeconds(0, 0);
+    candidate.setTime(candidate.getTime() + 60_000);
+    for (let i = 0; i < 10_080; i++) {
+      if (matcher.match(candidate)) return candidate.getTime();
+      candidate.setTime(candidate.getTime() + 60_000);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Seed sample recurring jobs once on startup (INSERT OR IGNORE preserves existing rows)
+db.transaction(() => {
+  const seed = [
+    {
+      id: "rj-sample-1",
+      name: "Daily project sync",
+      goal: "Scan all active projects, check their backlog.md for stale [~] items older than 24 h, and post a summary to Discord.",
+      schedule: "0 9 * * *",
+      timezone: "UTC",
+      enabled: 1,
+      last_run_at: Date.now() - 3 * 3600_000,
+      last_status: "done",
+    },
+    {
+      id: "rj-sample-2",
+      name: "Hourly job sweeper",
+      goal: "Check for orphaned running jobs (no activity for >10 min) and mark them as error, then broadcast a status update.",
+      schedule: "0 * * * *",
+      timezone: "UTC",
+      enabled: 1,
+      last_run_at: Date.now() - 45 * 60_000,
+      last_status: "done",
+    },
+    {
+      id: "rj-sample-3",
+      name: "Weekly memory digest",
+      goal: "Summarise the week's Discord conversations, job completions, and memory updates into a digest and store it in /memory.",
+      schedule: "0 8 * * 1",
+      timezone: "Europe/Paris",
+      enabled: 0,
+      last_run_at: Date.now() - 7 * 86400_000,
+      last_status: "done",
+    },
+  ];
+  const ins = db.prepare(`
+    INSERT OR IGNORE INTO recurring_jobs (id, name, goal, schedule, timezone, enabled, last_run_at, last_status, next_run_at)
+    VALUES (@id, @name, @goal, @schedule, @timezone, @enabled, @last_run_at, @last_status, @next_run_at)
+  `);
+  for (const row of seed) {
+    ins.run({ ...row, next_run_at: row.enabled ? computeNextRun(row.schedule, row.timezone) : null });
+  }
+})();
+
+app.get("/api/recurring-jobs", (_req, res) => {
+  const rows = db.prepare(
+    "SELECT * FROM recurring_jobs ORDER BY created_at ASC"
+  ).all();
+  // Re-compute next_run_at in memory so it's always fresh
+  const result = rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    goal: r.goal,
+    schedule: r.schedule,
+    timezone: r.timezone,
+    scheduleType: r.schedule_type ?? "custom",
+    startTime: r.start_time ?? null,
+    endTime: r.end_time ?? null,
+    daysOfWeek: r.days_of_week ? r.days_of_week.split(",").map(Number) : [],
+    enabled: r.enabled === 1,
+    lastRunAt: r.last_run_at ?? null,
+    lastStatus: r.last_status ?? null,
+    nextRunAt: r.enabled ? computeNextRun(r.schedule, r.timezone) : null,
+  }));
+  res.json(result);
+});
+
+app.post("/api/recurring-jobs", (req, res) => {
+  const {
+    name, goal, schedule, timezone = "UTC", enabled = true,
+    scheduleType = "custom", startTime = null, endTime = null, daysOfWeek = null,
+  } = req.body ?? {};
+  if (!name || !goal || !schedule) {
+    return res.status(400).json({ error: "name, goal, and schedule are required" });
+  }
+  if (!cron.validate(schedule)) {
+    return res.status(400).json({ error: "invalid cron expression" });
+  }
+  const id = randomUUID();
+  const enabledInt = enabled ? 1 : 0;
+  const nextRunAt = enabledInt ? computeNextRun(schedule, timezone) : null;
+  const dowStr = Array.isArray(daysOfWeek) && daysOfWeek.length ? daysOfWeek.join(",") : (daysOfWeek ?? null);
+  db.prepare(`
+    INSERT INTO recurring_jobs (id, name, goal, schedule, timezone, enabled, next_run_at, schedule_type, start_time, end_time, days_of_week)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, name, goal, schedule, timezone, enabledInt, nextRunAt, scheduleType, startTime, endTime, dowStr);
+  const row = db.prepare("SELECT * FROM recurring_jobs WHERE id = ?").get(id);
+  res.status(201).json({
+    id: row.id, name: row.name, goal: row.goal,
+    schedule: row.schedule, timezone: row.timezone,
+    scheduleType: row.schedule_type, startTime: row.start_time, endTime: row.end_time,
+    daysOfWeek: row.days_of_week ? row.days_of_week.split(",").map(Number) : [],
+    enabled: row.enabled === 1,
+    lastRunAt: row.last_run_at ?? null,
+    lastStatus: row.last_status ?? null,
+    nextRunAt,
+  });
+});
+
+app.delete("/api/recurring-jobs/:id", (req, res) => {
+  const { id } = req.params;
+  const row = db.prepare("SELECT id FROM recurring_jobs WHERE id = ?").get(id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  db.prepare("DELETE FROM recurring_jobs WHERE id = ?").run(id);
+  res.json({ ok: true });
+});
+
+app.post("/api/recurring-jobs/:id/toggle", (req, res) => {
+  const { id } = req.params;
+  const row = db.prepare("SELECT * FROM recurring_jobs WHERE id = ?").get(id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  const newEnabled = row.enabled === 1 ? 0 : 1;
+  const nextRunAt = newEnabled ? computeNextRun(row.schedule, row.timezone) : null;
+  db.prepare(
+    "UPDATE recurring_jobs SET enabled = ?, next_run_at = ? WHERE id = ?"
+  ).run(newEnabled, nextRunAt, id);
+  res.json({ id, enabled: newEnabled === 1, nextRunAt });
+});
+
+// Manual trigger — run a recurring job immediately regardless of schedule
+app.post("/api/recurring-jobs/:id/run", async (req, res) => {
+  const { id } = req.params;
+  const row = db.prepare("SELECT * FROM recurring_jobs WHERE id = ?").get(id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  if (row.current_job_id) {
+    return res.status(409).json({
+      error: "job is already running",
+      currentJobId: row.current_job_id,
+    });
+  }
+  try {
+    const upstream = await fetch(`${SONA_API}/goals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: row.goal }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!upstream.ok) {
+      const text = await upstream.text().catch(() => "");
+      return res.status(502).json({
+        error: `sona-agent returned HTTP ${upstream.status}: ${text.slice(0, 200)}`,
+      });
+    }
+    const data = await upstream.json();
+    const jobId = data.id;
+    const now = Date.now();
+    db.prepare(
+      `UPDATE recurring_jobs
+       SET last_run_at = ?, last_status = 'running', current_job_id = ?
+       WHERE id = ?`
+    ).run(now, jobId, id);
+    console.log(`[scheduler] manual run: spawned job ${jobId} for recurring job "${row.name}" (${id})`);
+    res.json({ ok: true, jobId });
+  } catch (err) {
+    console.error(`[scheduler] manual run failed for "${row.name}" (${id}):`, err.message);
+    res.status(503).json({ error: err.message });
+  }
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 syncFromFilesystem();
 
-// Periodic filesystem sync every 30 seconds — also broadcasts to job SSE clients
+// Periodic filesystem sync every 30 seconds — also broadcasts to job SSE clients.
+// Also cleans up any stale current_job_id entries for completed jobs.
 cron.schedule("*/30 * * * * *", () => {
-  try { syncFromFilesystem(); } catch (err) { console.error("[sync error]", err.message); }
+  try {
+    syncFromFilesystem();
+    // Resolve recurring jobs whose tracked sub-job has now finished
+    const tracked = db
+      .prepare("SELECT id, current_job_id FROM recurring_jobs WHERE current_job_id IS NOT NULL")
+      .all();
+    for (const rj of tracked) {
+      const job = db.prepare("SELECT status FROM jobs WHERE id = ?").get(rj.current_job_id);
+      if (job && job.status !== "running") {
+        const finalStatus = job.status === "done" ? "done" : "error";
+        db.prepare(
+          "UPDATE recurring_jobs SET last_status = ?, current_job_id = NULL WHERE id = ?"
+        ).run(finalStatus, rj.id);
+      }
+    }
+  } catch (err) {
+    console.error("[sync error]", err.message);
+  }
+});
+
+// Minute-by-minute scheduler — fires recurring jobs when their next_run_at is reached
+cron.schedule("* * * * *", async () => {
+  try {
+    const results = await runDueJobs({
+      db,
+      fetchFn: fetch,
+      sonaApiUrl: SONA_API,
+      computeNextRun,
+    });
+    if (results.length > 0) {
+      console.log(`[scheduler] tick: ${results.length} job(s) processed`, results);
+    }
+  } catch (err) {
+    console.error("[scheduler] tick error:", err.message);
+  }
 });
 
 // Kick off initial status fetch

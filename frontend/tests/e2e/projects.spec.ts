@@ -195,3 +195,81 @@ test.describe("Projects page", () => {
     await expect(page.locator("text=Application error")).not.toBeVisible();
   });
 });
+
+test.describe("New Project creation", () => {
+  const TEST_PROJECT_NAME = `e2e-test-${Date.now()}`;
+
+  test.afterEach(async () => {
+    // clean up any project created during the test
+    await fetch(`http://localhost:3011/api/projects`, {
+      method: 'GET',
+    }).catch(() => {});
+    // best-effort cleanup via host — ignore errors
+    const { execSync } = await import('child_process');
+    try {
+      execSync(`sudo rm -rf /home/beniben/sona-workspace/projects/${TEST_PROJECT_NAME}`, { stdio: 'ignore' });
+    } catch {}
+  });
+
+  test("New Project button opens modal", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+    const btn = page.locator('[data-testid="new-project-btn"]');
+    await expect(btn).toBeVisible();
+    await btn.click();
+    await expect(page.locator("text=New Project").nth(1)).toBeVisible();
+    await expect(page.locator('[data-testid="new-project-name"]')).toBeVisible();
+    await expect(page.locator('[data-testid="new-project-description"]')).toBeVisible();
+    await expect(page.locator('[data-testid="new-project-features"]')).toBeVisible();
+  });
+
+  test("modal closes on Cancel", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+    await page.locator('[data-testid="new-project-btn"]').click();
+    await page.locator("button", { hasText: "Cancel" }).click();
+    await expect(page.locator('[data-testid="new-project-name"]')).not.toBeVisible();
+  });
+
+  test("shows error when name is missing", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+    await page.locator('[data-testid="new-project-btn"]').click();
+    await page.locator('[data-testid="new-project-description"]').fill("Some description");
+    await page.locator('[data-testid="new-project-submit"]').click();
+    await expect(page.locator("text=Project name is required")).toBeVisible();
+  });
+
+  test("shows error when description is missing", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+    await page.locator('[data-testid="new-project-btn"]').click();
+    await page.locator('[data-testid="new-project-name"]').fill("some-name");
+    await page.locator('[data-testid="new-project-submit"]').click();
+    await expect(page.locator("text=Description is required")).toBeVisible();
+  });
+
+  test("creates project and generates briefing.md + backlog.md", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+    await page.locator('[data-testid="new-project-btn"]').click();
+    await page.locator('[data-testid="new-project-name"]').fill(TEST_PROJECT_NAME);
+    await page.locator('[data-testid="new-project-description"]').fill("An e2e test project created by Playwright.");
+    await page.locator('[data-testid="new-project-features"]').fill("Feature A\nFeature B");
+    await page.locator('[data-testid="new-project-submit"]').click();
+
+    // modal should close and new project card should appear
+    await expect(page.locator('[data-testid="new-project-name"]')).not.toBeVisible({ timeout: 10000 });
+    await expect(page.locator("h3", { hasText: TEST_PROJECT_NAME })).toBeVisible({ timeout: 10000 });
+
+    // verify files were created via the API
+    const briefRes = await page.request.get(`/api/projects/${TEST_PROJECT_NAME}/briefing`);
+    const briefData = await briefRes.json();
+    expect(briefData.content).toContain("An e2e test project created by Playwright.");
+    expect(briefData.content).toContain("Feature A");
+
+    const backlogRes = await page.request.get(`/api/projects/${TEST_PROJECT_NAME}/backlog`);
+    const backlogData = await backlogRes.json();
+    expect(backlogData.raw ?? backlogData.content ?? JSON.stringify(backlogData)).toContain("Define acceptance criteria");
+  });
+});
