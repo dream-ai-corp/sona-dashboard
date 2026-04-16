@@ -494,8 +494,11 @@ function parseBacklog(content) {
     const checked = /^- \[x\]/i.test(line);
     const unchecked = /^- \[ \]/.test(line);
     if (!checked && !unchecked) continue;
-    const text = line.replace(/^- \[.\]\s*/, '').replace(/\s*\(job:[^)]+\)/, '').trim();
-    items.push({ index: idx++, lineIndex: i, text, checked });
+    let text = line.replace(/^- \[.\]\s*/, '').replace(/\s*\(job:[^)]+\)/, '').trim();
+    const priorityMatch = text.match(/^\[(P[123])\]\s*/);
+    const priority = priorityMatch ? priorityMatch[1] : null;
+    if (priorityMatch) text = text.slice(priorityMatch[0].length);
+    items.push({ index: idx++, lineIndex: i, text, checked, priority });
   }
   return items;
 }
@@ -516,8 +519,11 @@ function parseBacklogSections(content) {
     const checked = /^- \[x\]/i.test(line);
     const unchecked = /^- \[ \]/.test(line);
     if (!checked && !unchecked) continue;
-    const text = line.replace(/^- \[.\]\s*/, '').replace(/\s*\(job:[^)]+\)/, '').trim();
-    current.items.push({ index: itemIdx++, lineIndex: i, text, checked });
+    let text = line.replace(/^- \[.\]\s*/, '').replace(/\s*\(job:[^)]+\)/, '').trim();
+    const priorityMatch = text.match(/^\[(P[123])\]\s*/);
+    const priority = priorityMatch ? priorityMatch[1] : null;
+    if (priorityMatch) text = text.slice(priorityMatch[0].length);
+    current.items.push({ index: itemIdx++, lineIndex: i, text, checked, priority });
   }
   if (current.header !== null || current.items.length > 0) sections.push(current);
   return sections;
@@ -739,13 +745,116 @@ app.patch("/api/projects/:name/backlog/:index", (req, res) => {
     }
     if (typeof req.body.text === 'string' && req.body.text.trim()) {
       const line = lines[item.lineIndex];
-      const prefix = (line.match(/^- \[.\]\s*/)?.[0]) ?? '- [ ] ';
+      const cbPrefix = (line.match(/^- \[.\]\s*/)?.[0]) ?? '- [ ] ';
+      const priorityTag = (line.slice(cbPrefix.length).match(/^\[P[123]\]\s*/)?.[0]) ?? '';
       const jobSuffix = (line.match(/\s*\(job:[^)]+\)/)?.[0]) ?? '';
-      lines[item.lineIndex] = `${prefix}${req.body.text.trim()}${jobSuffix}`;
+      lines[item.lineIndex] = `${cbPrefix}${priorityTag}${req.body.text.trim()}${jobSuffix}`;
+    }
+    if ('priority' in req.body) {
+      const line = lines[item.lineIndex];
+      const cbPrefix = (line.match(/^- \[.\]\s*/)?.[0]) ?? '- [ ] ';
+      const rest = line.slice(cbPrefix.length).replace(/^\[P[123]\]\s*/, '');
+      const newPriority = req.body.priority;
+      if (newPriority && ['P1', 'P2', 'P3'].includes(newPriority)) {
+        lines[item.lineIndex] = `${cbPrefix}[${newPriority}] ${rest}`;
+      } else {
+        lines[item.lineIndex] = `${cbPrefix}${rest}`;
+      }
     }
     const newContent = lines.join('\n');
     fs.writeFileSync(filePath, newContent, "utf-8");
     res.json({ ok: true, items: parseBacklog(newContent), sections: parseBacklogSections(newContent), raw: newContent });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ── Project brainstorm ────────────────────────────────────────────────────────
+const BRAINSTORM_TEMPLATE = (name) => `# Brainstorm — ${name}
+
+> Zone de réflexion libre. Les idées ici ne sont pas encore validées. 
+> Une fois discutées avec Pierre, elles partent dans backlog.md avec une priorité.
+
+## Idées en attente de discussion
+
+<!-- Ajouter les idées ici. Format suggéré: -->
+<!-- - Idée courte — contexte ou motivation -->
+
+## Idées approuvées → à déplacer dans le backlog
+
+<!-- Pierre approuve une idée ici avant qu'elle parte dans le backlog -->
+
+## Idées rejetées / en pause
+
+<!-- Garder la trace des idées qu'on a décidé de ne pas faire pour l'instant -->
+`;
+
+app.get("/api/projects/:name/brainstorm", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const filePath = path.join(PROJECTS_DIR, name, "brainstorm.md");
+  if (!fs.existsSync(filePath)) return res.json({ raw: '', exists: false });
+  try {
+    const raw = fs.readFileSync(filePath, "utf-8");
+    res.json({ raw, exists: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/projects/:name/brainstorm", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const { idea } = req.body;
+  if (typeof idea !== "string" || !idea.trim()) {
+    return res.status(400).json({ error: "idea must be a non-empty string" });
+  }
+  const filePath = path.join(PROJECTS_DIR, name, "brainstorm.md");
+  try {
+    let content = fs.existsSync(filePath)
+      ? fs.readFileSync(filePath, "utf-8")
+      : BRAINSTORM_TEMPLATE(name);
+    const marker = "## Idées en attente de discussion";
+    const nextSection = "## Idées approuvées";
+    const markerIdx = content.indexOf(marker);
+    if (markerIdx === -1) {
+      content = content + `\n- ${idea.trim()}\n`;
+    } else {
+      const afterMarker = content.indexOf(nextSection, markerIdx + marker.length);
+      const insertPos = afterMarker === -1 ? content.length : afterMarker;
+      const before = content.slice(0, insertPos).trimEnd();
+      const after = content.slice(insertPos);
+      content = before + `\n- ${idea.trim()}\n\n` + after;
+    }
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content, "utf-8");
+    res.json({ ok: true, raw: content });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/projects/:name/brainstorm/promote", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const { idea, priority = "P2" } = req.body;
+  if (typeof idea !== "string" || !idea.trim()) {
+    return res.status(400).json({ error: "idea must be a non-empty string" });
+  }
+  if (!["P1", "P2", "P3"].includes(priority)) {
+    return res.status(400).json({ error: "priority must be P1, P2, or P3" });
+  }
+  const backlogPath = path.join(PROJECTS_DIR, name, "backlog.md");
+  if (!fs.existsSync(backlogPath)) {
+    return res.status(404).json({ error: "backlog not found for project" });
+  }
+  try {
+    const existing = fs.readFileSync(backlogPath, "utf-8");
+    const newLine = `- [ ] [${priority}] ${idea.trim()}`;
+    const newContent = existing.trimEnd() + "\n" + newLine + "\n";
+    fs.writeFileSync(backlogPath, newContent, "utf-8");
+    res.json({ ok: true, added: newLine });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

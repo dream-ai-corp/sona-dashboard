@@ -48,6 +48,7 @@ interface BacklogItem {
   lineIndex: number;
   text: string;
   checked: boolean;
+  priority: 'P1' | 'P2' | 'P3' | null;
 }
 
 interface BacklogSection {
@@ -150,15 +151,26 @@ function BacklogHeader({ header, level }: { header: string; level: number }) {
   );
 }
 
+function priorityColor(p: string | null): { color: string; bg: string; border: string } {
+  switch (p) {
+    case 'P1': return { color: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.3)' };
+    case 'P2': return { color: '#fbbf24', bg: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.3)' };
+    case 'P3': return { color: '#60a5fa', bg: 'rgba(96,165,250,0.12)', border: 'rgba(96,165,250,0.3)' };
+    default:   return { color: '#475569', bg: 'rgba(71,85,105,0.1)',   border: 'rgba(71,85,105,0.2)' };
+  }
+}
+
 function BacklogItemRow({
   item,
   onToggle,
   onEdit,
+  onPriorityChange,
   saving,
 }: {
   item: BacklogItem;
   onToggle: (item: BacklogItem) => void;
   onEdit: (item: BacklogItem, text: string) => void;
+  onPriorityChange: (item: BacklogItem, priority: 'P1' | 'P2' | 'P3' | null) => void;
   saving: boolean;
 }) {
   const [editing, setEditing] = useState(false);
@@ -180,6 +192,14 @@ function BacklogItemRow({
   const cancelEdit = () => {
     setEditing(false);
     setDraft(item.text);
+  };
+
+  const pc = priorityColor(item.priority);
+  const PRIORITIES: Array<'P1' | 'P2' | 'P3' | null> = ['P1', 'P2', 'P3', null];
+  const cyclePriority = () => {
+    const idx = PRIORITIES.indexOf(item.priority);
+    const next = PRIORITIES[(idx + 1) % PRIORITIES.length];
+    onPriorityChange(item, next);
   };
 
   return (
@@ -205,6 +225,23 @@ function BacklogItemRow({
         }}
       >
         {item.checked && <Check size={10} color="#4ade80" strokeWidth={3} />}
+      </button>
+
+      {/* Priority badge — click to cycle P1→P2→P3→none */}
+      <button
+        onClick={cyclePriority}
+        disabled={saving}
+        title="Click to change priority"
+        style={{
+          flexShrink: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '0.06em',
+          padding: '2px 6px', borderRadius: '5px', cursor: saving ? 'not-allowed' : 'pointer',
+          color: item.checked ? '#334155' : pc.color,
+          background: item.checked ? 'rgba(255,255,255,0.03)' : pc.bg,
+          border: `1px solid ${item.checked ? 'rgba(255,255,255,0.06)' : pc.border}`,
+          transition: 'all 150ms ease', minWidth: '30px', textAlign: 'center',
+        }}
+      >
+        {item.priority ?? '—'}
       </button>
 
       {editing ? (
@@ -583,6 +620,25 @@ export default function ProjectDetailPage() {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text }),
+        },
+      );
+      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
+      if (data.items) setItems(data.items);
+      if (data.sections) setSections(data.sections);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handlePriorityChange = async (item: BacklogItem, priority: 'P1' | 'P2' | 'P3' | null) => {
+    setSaving(true);
+    try {
+      const res = await fetch(
+        `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ priority }),
         },
       );
       const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
@@ -1149,6 +1205,7 @@ export default function ProjectDetailPage() {
                               item={item}
                               onToggle={handleToggle}
                               onEdit={handleEdit}
+                              onPriorityChange={handlePriorityChange}
                               saving={saving}
                             />
                           ))}
@@ -1165,6 +1222,7 @@ export default function ProjectDetailPage() {
                               item={item}
                               onToggle={handleToggle}
                               onEdit={handleEdit}
+                              onPriorityChange={handlePriorityChange}
                               saving={saving}
                             />
                           ))}
@@ -1193,6 +1251,7 @@ export default function ProjectDetailPage() {
                         item={item}
                         onToggle={handleToggle}
                         onEdit={handleEdit}
+                        onPriorityChange={handlePriorityChange}
                         saving={saving}
                       />
                     ))}
@@ -1209,6 +1268,7 @@ export default function ProjectDetailPage() {
                         item={item}
                         onToggle={handleToggle}
                         onEdit={handleEdit}
+                        onPriorityChange={handlePriorityChange}
                         saving={saving}
                       />
                     ))}
