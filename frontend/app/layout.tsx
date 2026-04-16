@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
+import SonaFloatingChat from '@/components/SonaFloatingChat';
 
 const inter = Inter({
   subsets: ['latin'],
@@ -18,6 +19,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={inter.variable}>
       <body style={{ background: '#0a0a0f', color: '#e2e8f0', minHeight: '100vh' }}>
         {children}
+        <SonaFloatingChat />
       </body>
     </html>
   );

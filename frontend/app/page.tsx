@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Sidebar from '@/components/Sidebar';
-import SonaFloatingChat from '@/components/SonaFloatingChat';
 import SonaChatInput from '@/components/SonaChatInput';
 import StatCard from '@/components/StatCard';
 import {
@@ -565,7 +564,6 @@ export default function Home() {
           Sona Dashboard · live via SSE · {now}
         </div>
       </main>
-      <SonaFloatingChat />
       <style jsx global>{`
         @media (max-width: 768px) {
           .sona-topbar-chat { display: none !important; }
