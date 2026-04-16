@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import PageShell from '@/components/PageShell';
 import {
   Repeat2, RefreshCw, Plus, Clock, Play, Pause,
-  CheckCircle2, XCircle, Circle, Trash2, X, AlertCircle,
+  CheckCircle2, XCircle, Circle, Trash2, X, AlertCircle, Mic, Zap,
 } from 'lucide-react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -109,6 +109,39 @@ function NewJobModal({ onClose, onCreated }: NewJobModalProps) {
   const [timezone, setTimezone] = useState('UTC');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listening, setListening] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
+
+  // Clean up on unmount
+  useEffect(() => () => { recognitionRef.current?.stop(); }, []);
+
+  const toggleVoice = () => {
+    if (listening) {
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (!SR) { alert('Voice input is not supported in this browser.'); return; }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = new SR() as any;
+    r.lang = navigator.language?.startsWith('fr') ? 'fr-FR' : navigator.language ?? 'fr-FR';
+    r.continuous = true;
+    r.interimResults = true;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    r.onresult = (e: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const transcript = Array.from(e.results as any[]).map((res: any) => res[0].transcript).join('');
+      setGoal(transcript);
+    };
+    r.onend = () => setListening(false);
+    r.onerror = () => setListening(false);
+    recognitionRef.current = r;
+    r.start();
+    setListening(true);
+  };
 
   const cronPreview = freq === 'custom' ? customCron : buildCronExpression(freq, startTime, daysOfWeek);
 
@@ -224,9 +257,31 @@ function NewJobModal({ onClose, onCreated }: NewJobModalProps) {
 
           {/* Goal */}
           <div style={{ marginBottom: '16px' }}>
-            <label style={labelStyle}>Goal / Prompt</label>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
+              <label style={{ ...labelStyle, marginBottom: 0 }}>Goal / Prompt</label>
+              <button
+                type="button"
+                onClick={toggleVoice}
+                title={listening ? 'Stop recording' : 'Dictate goal (fr-FR / browser lang)'}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '5px',
+                  padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: 600,
+                  cursor: 'pointer', fontFamily: 'inherit',
+                  background: listening ? 'rgba(239,68,68,0.15)' : 'rgba(124,58,237,0.1)',
+                  color: listening ? '#f87171' : '#a78bfa',
+                  border: listening ? '1px solid rgba(239,68,68,0.3)' : '1px solid rgba(124,58,237,0.2)',
+                  transition: 'all 0.15s',
+                }}
+              >
+                <Mic size={11} className={listening ? 'animate-pulse' : ''} />
+                {listening ? 'Listening…' : 'Voice'}
+              </button>
+            </div>
             <textarea
-              style={{ ...inputStyle, minHeight: '90px', resize: 'vertical', lineHeight: 1.5 }}
+              style={{
+                ...inputStyle, minHeight: '90px', resize: 'vertical', lineHeight: 1.5,
+                ...(listening ? { borderColor: 'rgba(239,68,68,0.4)' } : {}),
+              }}
               placeholder="Describe what the sub-agent should do each time this job runs…"
               value={goal}
               onChange={e => setGoal(e.target.value)}
@@ -417,10 +472,12 @@ function RecurringJobRow({
   job,
   onToggle,
   onDelete,
+  onRunNow,
 }: {
   job: RecurringJob;
   onToggle: (id: string, enabled: boolean) => void;
   onDelete: (id: string) => void;
+  onRunNow: (id: string) => void;
 }) {
   const badge = lastStatusBadge(job.lastStatus);
   return (
@@ -507,6 +564,37 @@ function RecurringJobRow({
         </div>
       </div>
 
+      {/* Run Now */}
+      <button
+        onClick={() => onRunNow(job.id)}
+        title="Run now"
+        disabled={job.lastStatus === 'running'}
+        style={{
+          flexShrink: 0,
+          width: '30px', height: '30px',
+          borderRadius: '8px',
+          border: '1px solid rgba(234,179,8,0.2)',
+          background: 'rgba(234,179,8,0.06)',
+          color: job.lastStatus === 'running' ? '#334155' : '#475569',
+          cursor: job.lastStatus === 'running' ? 'not-allowed' : 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          transition: 'all 0.15s',
+          opacity: job.lastStatus === 'running' ? 0.5 : 1,
+        }}
+        onMouseEnter={e => {
+          if (job.lastStatus !== 'running') {
+            (e.currentTarget as HTMLButtonElement).style.color = '#fbbf24';
+            (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(234,179,8,0.5)';
+          }
+        }}
+        onMouseLeave={e => {
+          (e.currentTarget as HTMLButtonElement).style.color = '#475569';
+          (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(234,179,8,0.2)';
+        }}
+      >
+        <Zap size={13} />
+      </button>
+
       {/* Delete */}
       <button
         onClick={() => onDelete(job.id)}
@@ -576,6 +664,25 @@ export default function RecurringJobsPage() {
 
   const handleCreated = (job: RecurringJob) => {
     setJobs(prev => [job, ...prev]);
+  };
+
+  const handleRunNow = async (id: string) => {
+    // Optimistically mark as running
+    setJobs(prev => prev.map(j => j.id === id ? { ...j, lastStatus: 'running' } : j));
+    try {
+      const res = await fetch(`/api/recurring-jobs/${id}/run`, { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data?.error ?? `HTTP ${res.status}`);
+        // revert optimistic update
+        fetchJobs();
+      } else {
+        // Refresh after a short delay to get the updated status
+        setTimeout(() => fetchJobs(), 2000);
+      }
+    } catch {
+      fetchJobs();
+    }
   };
 
   const enabled = jobs.filter(j => j.enabled).length;
@@ -684,7 +791,7 @@ export default function RecurringJobsPage() {
                 <div style={{ width: '110px', flexShrink: 0, textAlign: 'center' }}>Schedule</div>
                 <div style={{ width: '120px', flexShrink: 0, textAlign: 'right' }}>Last Run</div>
                 <div style={{ width: '90px', flexShrink: 0, textAlign: 'right' }}>Next Run</div>
-                <div style={{ width: '30px', flexShrink: 0 }} />
+                <div style={{ width: '68px', flexShrink: 0 }} />
               </div>
               {jobs.map(job => (
                 <RecurringJobRow
@@ -692,6 +799,7 @@ export default function RecurringJobsPage() {
                   job={job}
                   onToggle={handleToggle}
                   onDelete={handleDelete}
+                  onRunNow={handleRunNow}
                 />
               ))}
             </div>

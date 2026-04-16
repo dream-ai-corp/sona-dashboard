@@ -7,6 +7,7 @@ const cron = require("node-cron");
 const fetch = require("node-fetch");
 const { randomUUID } = require("crypto");
 const TimeMatcher = require("node-cron/src/time-matcher");
+const { runDueJobs } = require("./scheduler.js");
 
 const app = express();
 const PORT = process.env.PORT || 3011;
@@ -370,6 +371,21 @@ app.patch("/api/jobs/:id", (req, res) => {
   db.prepare(`UPDATE jobs SET status=?, completed_at=?, result=?, mtime=? WHERE id=?`)
     .run(status, completed_at || Date.now(), result ? JSON.stringify(result) : null,
          Date.now(), req.params.id);
+
+  // Propagate completion back to the recurring job that spawned this one
+  if (status !== "running") {
+    const rj = db
+      .prepare("SELECT id FROM recurring_jobs WHERE current_job_id = ?")
+      .get(req.params.id);
+    if (rj) {
+      const finalStatus =
+        status === "done" || status === "completed" ? "done" : "error";
+      db.prepare(
+        "UPDATE recurring_jobs SET last_status = ?, current_job_id = NULL WHERE id = ?"
+      ).run(finalStatus, rj.id);
+    }
+  }
+
   broadcastJobs();
   res.json({ ok: true });
 });
@@ -544,6 +560,74 @@ app.get("/api/projects", (_req, res) => {
     }
   }
   res.json({ projects });
+});
+
+app.post("/api/projects", (req, res) => {
+  const { name, description, features } = req.body ?? {};
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  if (!slug) return res.status(400).json({ error: "invalid name" });
+  if (slug.includes('..')) return res.status(400).json({ error: "invalid name" });
+
+  const dir = path.join(PROJECTS_DIR, slug);
+  if (fs.existsSync(dir)) {
+    return res.status(409).json({ error: `project "${slug}" already exists` });
+  }
+
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+
+    // project.json
+    const projectJson = {
+      name: name.trim(),
+      description: description?.trim() || undefined,
+      status: 'active',
+      created: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify(projectJson, null, 2) + '\n', 'utf-8');
+
+    // briefing.md
+    const featuresText = features?.trim()
+      ? features.trim().split('\n').filter(Boolean).map(l => `- ${l.trim()}`).join('\n')
+      : '- TBD';
+    const briefing = `# ${name.trim()} — Briefing
+
+## Description
+${description?.trim() || 'TBD'}
+
+## Key Features / Goals
+${featuresText}
+
+## Context
+Created: ${new Date().toISOString()}
+
+## Acceptance Criteria
+- [ ] TBD
+
+## Out of Scope
+- TBD
+`;
+    fs.writeFileSync(path.join(dir, 'briefing.md'), briefing, 'utf-8');
+
+    // backlog.md
+    const backlog = `# ${name.trim()} — Backlog
+
+## In Progress
+- [ ] Define acceptance criteria (see briefing.md)
+
+## To Do
+- [ ] TBD
+
+## Done
+`;
+    fs.writeFileSync(path.join(dir, 'backlog.md'), backlog, 'utf-8');
+
+    res.status(201).json({ project: readProjectMeta(slug) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get("/api/projects/:name", (req, res) => {
@@ -748,6 +832,14 @@ app.delete("/api/projects/:name/sprints/:sprintId", (req, res) => {
 });
 
 // ── Project brief ─────────────────────────────────────────────────────────────
+app.get("/api/projects/:name/briefing", (req, res) => {
+  const name = decodeURIComponent(req.params.name);
+  if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
+  const briefingPath = path.join(PROJECTS_DIR, name, "briefing.md");
+  const content = fs.existsSync(briefingPath) ? fs.readFileSync(briefingPath, "utf-8") : '';
+  res.json({ content });
+});
+
 app.get("/api/projects/:name/brief", (req, res) => {
   const name = decodeURIComponent(req.params.name);
   if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
@@ -846,6 +938,8 @@ for (const col of [
   "ALTER TABLE recurring_jobs ADD COLUMN start_time TEXT",
   "ALTER TABLE recurring_jobs ADD COLUMN end_time TEXT",
   "ALTER TABLE recurring_jobs ADD COLUMN days_of_week TEXT",
+  // tracks the currently in-flight job spawned by this recurring job
+  "ALTER TABLE recurring_jobs ADD COLUMN current_job_id TEXT",
 ]) {
   try { db.exec(col); } catch { /* column already exists */ }
 }
@@ -990,12 +1084,87 @@ app.post("/api/recurring-jobs/:id/toggle", (req, res) => {
   res.json({ id, enabled: newEnabled === 1, nextRunAt });
 });
 
+// Manual trigger — run a recurring job immediately regardless of schedule
+app.post("/api/recurring-jobs/:id/run", async (req, res) => {
+  const { id } = req.params;
+  const row = db.prepare("SELECT * FROM recurring_jobs WHERE id = ?").get(id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  if (row.current_job_id) {
+    return res.status(409).json({
+      error: "job is already running",
+      currentJobId: row.current_job_id,
+    });
+  }
+  try {
+    const upstream = await fetch(`${SONA_API}/goals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal: row.goal }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!upstream.ok) {
+      const text = await upstream.text().catch(() => "");
+      return res.status(502).json({
+        error: `sona-agent returned HTTP ${upstream.status}: ${text.slice(0, 200)}`,
+      });
+    }
+    const data = await upstream.json();
+    const jobId = data.id;
+    const now = Date.now();
+    db.prepare(
+      `UPDATE recurring_jobs
+       SET last_run_at = ?, last_status = 'running', current_job_id = ?
+       WHERE id = ?`
+    ).run(now, jobId, id);
+    console.log(`[scheduler] manual run: spawned job ${jobId} for recurring job "${row.name}" (${id})`);
+    res.json({ ok: true, jobId });
+  } catch (err) {
+    console.error(`[scheduler] manual run failed for "${row.name}" (${id}):`, err.message);
+    res.status(503).json({ error: err.message });
+  }
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 syncFromFilesystem();
 
-// Periodic filesystem sync every 30 seconds — also broadcasts to job SSE clients
+// Periodic filesystem sync every 30 seconds — also broadcasts to job SSE clients.
+// Also cleans up any stale current_job_id entries for completed jobs.
 cron.schedule("*/30 * * * * *", () => {
-  try { syncFromFilesystem(); } catch (err) { console.error("[sync error]", err.message); }
+  try {
+    syncFromFilesystem();
+    // Resolve recurring jobs whose tracked sub-job has now finished
+    const tracked = db
+      .prepare("SELECT id, current_job_id FROM recurring_jobs WHERE current_job_id IS NOT NULL")
+      .all();
+    for (const rj of tracked) {
+      const job = db.prepare("SELECT status FROM jobs WHERE id = ?").get(rj.current_job_id);
+      if (job && job.status !== "running") {
+        const finalStatus = job.status === "done" ? "done" : "error";
+        db.prepare(
+          "UPDATE recurring_jobs SET last_status = ?, current_job_id = NULL WHERE id = ?"
+        ).run(finalStatus, rj.id);
+      }
+    }
+  } catch (err) {
+    console.error("[sync error]", err.message);
+  }
+});
+
+// Minute-by-minute scheduler — fires recurring jobs when their next_run_at is reached
+cron.schedule("* * * * *", async () => {
+  try {
+    const results = await runDueJobs({
+      db,
+      fetchFn: fetch,
+      sonaApiUrl: SONA_API,
+      computeNextRun,
+    });
+    if (results.length > 0) {
+      console.log(`[scheduler] tick: ${results.length} job(s) processed`, results);
+    }
+  } catch (err) {
+    console.error("[scheduler] tick error:", err.message);
+  }
 });
 
 // Kick off initial status fetch
