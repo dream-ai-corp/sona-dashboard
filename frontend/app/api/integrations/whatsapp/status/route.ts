@@ -11,9 +11,9 @@ export async function GET() {
     const data = await res.json();
     // Normalise the response to our expected shape
     const status: 'CONNECTED' | 'QR_READY' | 'DISCONNECTED' =
-      data?.status === 'CONNECTED'
+      data?.status === 'CONNECTED' || data?.state === 'CONNECTED' || data?.state === 'READY'
         ? 'CONNECTED'
-        : data?.status === 'QR_READY'
+        : data?.status === 'QR_READY' || data?.state === 'QR_READY'
         ? 'QR_READY'
         : 'DISCONNECTED';
     return Response.json({ status, qr: data?.qr ?? undefined });

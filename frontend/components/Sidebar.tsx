@@ -10,6 +10,7 @@ import {
   Cpu,
   Brain,
   Settings,
+  FileText,
   Zap,
   FolderOpen,
   FolderKanban,
@@ -31,6 +32,7 @@ const navItems = [
   { icon: Brain,           label: 'Memory',         route: '/memory' },
   { icon: FolderKanban,    label: 'Projects',       route: '/projects' },
   { icon: Repeat2,         label: 'Recurring Jobs', route: '/recurring-jobs' },
+  { icon: FileText,        label: 'Notes',          route: '/notes' },
   { icon: Settings,        label: 'Settings',       route: '/settings' },
 ];
 

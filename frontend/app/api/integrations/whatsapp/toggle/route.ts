@@ -11,8 +11,8 @@ async function getCurrentStatus(): Promise<'CONNECTED' | 'QR_READY' | 'DISCONNEC
       signal: AbortSignal.timeout(4000),
     });
     const data = await res.json();
-    if (data?.status === 'CONNECTED') return 'CONNECTED';
-    if (data?.status === 'QR_READY') return 'QR_READY';
+    if (data?.status === 'CONNECTED' || data?.state === 'CONNECTED' || data?.state === 'READY') return 'CONNECTED';
+    if (data?.status === 'QR_READY' || data?.state === 'QR_READY') return 'QR_READY';
     return 'DISCONNECTED';
   } catch {
     return 'DISCONNECTED';

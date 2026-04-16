@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import PageShell from '@/components/PageShell';
+import QRCode from 'react-qr-code';
 import {
   Settings,
   Wifi,
@@ -481,18 +482,9 @@ function ConnectionsTab() {
                 Scan with WhatsApp to connect
               </span>
             </div>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={wa.qr}
-              alt="WhatsApp QR code"
-              style={{
-                width: '200px',
-                height: '200px',
-                borderRadius: '8px',
-                background: 'white',
-                padding: '8px',
-              }}
-            />
+            <div style={{ background: 'white', padding: '12px', borderRadius: '8px' }}>
+              <QRCode value={wa.qr} size={200} level="L" />
+            </div>
           </div>
         )}
       </div>

@@ -9,15 +9,16 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@clerk/nextjs": "^7.2.1",
     "@radix-ui/react-progress": "^1.1.8",
     "@radix-ui/react-tabs": "^1.1.13",
     "@types/marked": "^5.0.2",
+    "@types/pdf-parse": "^1.1.5",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.8.0",
     "marked": "^18.0.0",
     "next": "16.2.3",
+    "pdf-parse": "^2.4.5",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-qr-code": "^2.0.18",
