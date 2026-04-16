@@ -861,6 +861,67 @@ app.put("/api/projects/:name/brief", (req, res) => {
   }
 });
 
+
+// ── Project leads ─────────────────────────────────────────────────────────────
+function getLeadsPath(name) {
+  return path.join(PROJECTS_DIR, name, 'leads.json');
+}
+
+function readLeads(name) {
+  const filePath = getLeadsPath(name);
+  if (!fs.existsSync(filePath)) return [];
+  try { return JSON.parse(fs.readFileSync(filePath, 'utf-8')); } catch { return []; }
+}
+
+function writeLeads(name, leads) {
+  const filePath = getLeadsPath(name);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(leads, null, 2), 'utf-8');
+}
+
+app.get('/api/projects/:name/leads', (req, res) => {
+  const { name } = req.params;
+  res.json(readLeads(name));
+});
+
+app.post('/api/projects/:name/leads', (req, res) => {
+  const { name } = req.params;
+  const body = req.body;
+  const lead = {
+    id: randomUUID(),
+    createdAt: new Date().toISOString(),
+    name: body.name ?? '',
+    email: body.email ?? '',
+    phone: body.phone ?? '',
+    linkedinUrl: body.linkedinUrl ?? '',
+    notes: body.notes ?? '',
+    status: body.status ?? 'new',
+  };
+  const leads = readLeads(name);
+  leads.push(lead);
+  writeLeads(name, leads);
+  res.status(201).json(lead);
+});
+
+app.patch('/api/projects/:name/leads/:id', (req, res) => {
+  const { name, id } = req.params;
+  const leads = readLeads(name);
+  const idx = leads.findIndex((l) => l.id === id);
+  if (idx === -1) return res.status(404).json({ error: 'Lead not found' });
+  leads[idx] = { ...leads[idx], ...req.body };
+  writeLeads(name, leads);
+  res.json(leads[idx]);
+});
+
+app.delete('/api/projects/:name/leads/:id', (req, res) => {
+  const { name, id } = req.params;
+  const leads = readLeads(name);
+  const filtered = leads.filter((l) => l.id !== id);
+  if (filtered.length === leads.length) return res.status(404).json({ error: 'Lead not found' });
+  writeLeads(name, filtered);
+  res.json({ ok: true });
+});
+
 // ── Activity log ──────────────────────────────────────────────────────────────
 app.get("/api/activity", (_req, res) => {
   try {

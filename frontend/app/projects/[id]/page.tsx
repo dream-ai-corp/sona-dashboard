@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import Sidebar from '@/components/Sidebar';
+import LeadsPanel from '@/components/LeadsPanel';
 import {
   ChevronLeft,
   FolderOpen,
@@ -22,6 +23,7 @@ import {
   AlertCircle,
   CheckCircle2,
   RotateCcw,
+  Mic,
 } from 'lucide-react';
 
 interface Service {
@@ -432,6 +434,40 @@ export default function ProjectDetailPage() {
   const [statusSaving, setStatusSaving] = useState(false);
   const statusDropdownRef = useRef<HTMLDivElement>(null);
 
+  // Voice input for backlog
+  const [backlogListening, setBacklogListening] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const backlogRecognitionRef = useRef<any>(null);
+
+  useEffect(() => () => { backlogRecognitionRef.current?.stop(); }, []);
+
+  const toggleBacklogVoice = () => {
+    if (backlogListening) {
+      backlogRecognitionRef.current?.stop();
+      setBacklogListening(false);
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (!SR) { alert('Voice input is not supported in this browser.'); return; }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const r = new SR() as any;
+    r.lang = navigator.language?.startsWith('fr') ? 'fr-FR' : navigator.language ?? 'fr-FR';
+    r.continuous = true;
+    r.interimResults = true;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    r.onresult = (e: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const transcript = Array.from(e.results as any[]).map((res: any) => res[0].transcript).join('');
+      setNewItemText(transcript);
+    };
+    r.onend = () => setBacklogListening(false);
+    r.onerror = () => setBacklogListening(false);
+    backlogRecognitionRef.current = r;
+    r.start();
+    setBacklogListening(true);
+  };
+
   const fetchProject = useCallback(async () => {
     try {
       const res = await fetch('/api/projects');
@@ -499,7 +535,25 @@ export default function ProjectDetailPage() {
     fetchBrief();
     fetchSprints();
     fetchJobs();
-  }, [fetchProject, fetchBacklog, fetchBrief, fetchSprints, fetchJobs]);
+
+    // Silent auto-refresh every 5s — backlog and jobs can change while a daemon job runs
+    const silentRefreshBacklog = async () => {
+      try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(id)}/backlog`);
+        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; error?: string };
+        if (!data.error) { setItems(data.items ?? []); setSections(data.sections ?? []); }
+      } catch {}
+    };
+    const silentRefreshJobs = async () => {
+      try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(id)}/jobs`);
+        const data = await res.json() as { jobs?: Job[] };
+        setJobs(data.jobs ?? []);
+      } catch {}
+    };
+    const interval = setInterval(() => { silentRefreshBacklog(); silentRefreshJobs(); }, 5000);
+    return () => clearInterval(interval);
+  }, [fetchProject, fetchBacklog, fetchBrief, fetchSprints, fetchJobs, id]);
 
   const handleToggle = async (item: BacklogItem) => {
     setSaving(true);
@@ -792,12 +846,27 @@ export default function ProjectDetailPage() {
                       </span>
                     ))}
                     {project.services?.map((s) => (
-                      <span key={s.name} style={{
-                        display: 'inline-flex', alignItems: 'center', gap: '4px',
-                        fontSize: '10px', color: '#475569',
-                      }}>
-                        <Server size={10} /> :{s.port}
-                      </span>
+                      s.url ? (
+                        <a
+                          key={s.name}
+                          href={s.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: '4px',
+                            fontSize: '10px', color: '#67e8f9', textDecoration: 'none',
+                          }}
+                        >
+                          <Server size={10} /> {s.url.replace('http://72.60.185.57:', ':')}
+                        </a>
+                      ) : (
+                        <span key={s.name} style={{
+                          display: 'inline-flex', alignItems: 'center', gap: '4px',
+                          fontSize: '10px', color: '#475569',
+                        }}>
+                          <Server size={10} /> :{s.port}
+                        </span>
+                      )
                     ))}
                     {project.git?.remote && (
                       <a
@@ -1010,14 +1079,28 @@ export default function ProjectDetailPage() {
                 style={{
                   flex: 1, fontSize: '13px', padding: '9px 12px',
                   background: 'rgba(255,255,255,0.04)',
-                  border: '1px solid rgba(255,255,255,0.1)',
+                  border: `1px solid ${backlogListening ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'}`,
                   borderRadius: '10px', color: '#e2e8f0',
                   outline: 'none', fontFamily: 'inherit',
                   transition: 'border-color 150ms',
                 }}
-                onFocus={(e) => (e.currentTarget.style.borderColor = 'rgba(124,58,237,0.5)')}
-                onBlur={(e) => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)')}
+                onFocus={(e) => { if (!backlogListening) e.currentTarget.style.borderColor = 'rgba(124,58,237,0.5)'; }}
+                onBlur={(e) => { if (!backlogListening) e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; }}
               />
+              <button
+                onClick={toggleBacklogVoice}
+                title={backlogListening ? 'Stop recording' : 'Dictate backlog item'}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  width: '38px', borderRadius: '10px',
+                  background: backlogListening ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.04)',
+                  border: backlogListening ? '1px solid rgba(239,68,68,0.35)' : '1px solid rgba(255,255,255,0.1)',
+                  color: backlogListening ? '#f87171' : '#64748b',
+                  cursor: 'pointer', transition: 'all 150ms', fontFamily: 'inherit', flexShrink: 0,
+                }}
+              >
+                <Mic size={14} className={backlogListening ? 'animate-pulse' : ''} />
+              </button>
               <button
                 onClick={handleAddItem}
                 disabled={saving || !newItemText.trim()}
@@ -1253,6 +1336,8 @@ export default function ProjectDetailPage() {
           </div>
 
         </div>
+
+        <LeadsPanel projectId={id} />
       </main>
 
       <style>{`
