@@ -33,12 +33,28 @@ test.describe('Media page — /media?tab=image', () => {
     await expect(select).toHaveValue('flux-schnell');
   });
 
-  test('model selector lists all expected models', async ({ page }) => {
+  test('model selector lists all expected models including paid options', async ({ page }) => {
     const select = page.getByTestId('image-gen-model');
+    // Free models
     await expect(select.locator('option[value="flux-schnell"]')).toBeAttached();
-    await expect(select.locator('option[value="flux-dev"]')).toBeAttached();
     await expect(select.locator('option[value="sdxl"]')).toBeAttached();
     await expect(select.locator('option[value="sdxl-lightning"]')).toBeAttached();
+    // Paid models
+    await expect(select.locator('option[value="dall-e-3"]')).toBeAttached();
+    await expect(select.locator('option[value="midjourney"]')).toBeAttached();
+  });
+
+  test('paid models are labelled as payant in options', async ({ page }) => {
+    const select = page.getByTestId('image-gen-model');
+    const dalleOption = select.locator('option[value="dall-e-3"]');
+    const mjOption = select.locator('option[value="midjourney"]');
+    await expect(dalleOption).toContainText('payant');
+    await expect(mjOption).toContainText('payant');
+  });
+
+  test('free models are labelled as gratuit in options', async ({ page }) => {
+    const select = page.getByTestId('image-gen-model');
+    await expect(select.locator('option[value="flux-schnell"]')).toContainText('gratuit');
   });
 
   test('model can be changed via select', async ({ page }) => {

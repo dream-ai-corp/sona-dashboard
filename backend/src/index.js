@@ -70,6 +70,12 @@ db.exec(`
     next_run_at INTEGER,
     created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
   );
+
+  CREATE TABLE IF NOT EXISTS provider_keys (
+    provider TEXT PRIMARY KEY,
+    api_key TEXT NOT NULL,
+    updated_at INTEGER DEFAULT (strftime('%s','now') * 1000)
+  );
 `);
 
 // Prepared statements
@@ -1294,14 +1300,119 @@ app.post("/api/recurring-jobs/:id/run", async (req, res) => {
   }
 });
 
+// ── Provider API Keys Settings ─────────────────────────────────────────────────
+// GET  /api/settings/providers  → { replicate, openai, openrouter } (keys masked)
+// POST /api/settings/providers  → { provider, api_key } saves/updates a key
+// POST /api/settings/providers/:provider/test → tests a provider key
+
+const VALID_PROVIDERS = ["replicate", "openai", "openrouter", "huggingface"];
+
+app.get("/api/settings/providers", (req, res) => {
+  const rows = db.prepare("SELECT provider, api_key FROM provider_keys").all();
+  const result = {};
+  for (const row of rows) {
+    result[row.provider] = row.api_key;
+  }
+  // Fill missing providers with empty strings
+  for (const p of VALID_PROVIDERS) {
+    if (!(p in result)) result[p] = "";
+  }
+  res.json(result);
+});
+
+app.post("/api/settings/providers", (req, res) => {
+  const { provider, api_key } = req.body || {};
+  if (!provider || !VALID_PROVIDERS.includes(provider)) {
+    return res.status(400).json({ ok: false, error: `provider must be one of: ${VALID_PROVIDERS.join(", ")}` });
+  }
+  if (typeof api_key !== "string") {
+    return res.status(400).json({ ok: false, error: "api_key must be a string" });
+  }
+
+  if (api_key.trim() === "") {
+    // Delete the key if empty string is sent
+    db.prepare("DELETE FROM provider_keys WHERE provider = ?").run(provider);
+  } else {
+    db.prepare(`
+      INSERT INTO provider_keys (provider, api_key, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(provider) DO UPDATE SET api_key = excluded.api_key, updated_at = excluded.updated_at
+    `).run(provider, api_key.trim(), Date.now());
+  }
+
+  res.json({ ok: true });
+});
+
+app.post("/api/settings/providers/:provider/test", async (req, res) => {
+  const { provider } = req.params;
+  if (!VALID_PROVIDERS.includes(provider)) {
+    return res.status(400).json({ ok: false, error: "unknown provider" });
+  }
+
+  const row = db.prepare("SELECT api_key FROM provider_keys WHERE provider = ?").get(provider);
+  const apiKey = row?.api_key || process.env[`${provider.toUpperCase()}_API_KEY`] || process.env.REPLICATE_API_TOKEN || "";
+
+  if (!apiKey) {
+    return res.json({ ok: false, error: "No API key configured for this provider" });
+  }
+
+  try {
+    let testOk = false;
+    let errorMsg = "";
+
+    if (provider === "openai") {
+      const r = await fetch("https://api.openai.com/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      testOk = r.ok;
+      if (!testOk) errorMsg = `OpenAI HTTP ${r.status}`;
+    } else if (provider === "openrouter") {
+      const r = await fetch("https://openrouter.ai/api/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      testOk = r.ok;
+      if (!testOk) errorMsg = `OpenRouter HTTP ${r.status}`;
+    } else if (provider === "replicate") {
+      const r = await fetch("https://api.replicate.com/v1/account", {
+        headers: { Authorization: `Token ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      testOk = r.ok;
+      if (!testOk) errorMsg = `Replicate HTTP ${r.status}`;
+    } else if (provider === "huggingface") {
+      const r = await fetch("https://huggingface.co/api/whoami", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      testOk = r.ok;
+      if (!testOk) errorMsg = `HuggingFace HTTP ${r.status}`;
+    }
+
+    res.json({ ok: testOk, error: testOk ? undefined : errorMsg });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
 // ── Image Generation ──────────────────────────────────────────────────────────
 // POST /api/generate/image
 // Body: { prompt, model, ratio }
 // Returns: { ok, imageUrl } or { ok: false, error }
 //
-// Supported backends (via env):
-//   REPLICATE_API_TOKEN → uses Replicate API (FLUX.1-schnell, SDXL, ByteDance SDXL-Lightning)
-// If no token is configured, returns a placeholder so the UI still works in dev.
+// API keys are read from provider_keys DB table first, then env vars as fallback.
+
+function getProviderKey(provider) {
+  const row = db.prepare("SELECT api_key FROM provider_keys WHERE provider = ?").get(provider);
+  if (row?.api_key) return row.api_key;
+  // env fallback
+  if (provider === "replicate") return process.env.REPLICATE_API_TOKEN || "";
+  if (provider === "openai") return process.env.OPENAI_API_KEY || "";
+  if (provider === "openrouter") return process.env.OPENROUTER_API_KEY || "";
+  if (provider === "huggingface") return process.env.HUGGINGFACE_API_KEY || "";
+  return "";
+}
 
 const REPLICATE_TOKEN = process.env.REPLICATE_API_TOKEN || "";
 
@@ -1342,9 +1453,10 @@ app.post("/api/generate/image", async (req, res) => {
   }
 
   const size = RATIO_TO_SIZE[ratio] || RATIO_TO_SIZE["1:1"];
+  const replicateKey = getProviderKey("replicate");
 
   // No token → return a placeholder SVG (useful in dev without API keys)
-  if (!REPLICATE_TOKEN) {
+  if (!replicateKey) {
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}"><rect width="100%" height="100%" fill="#1e1b4b"/><text x="50%" y="50%" font-family="monospace" font-size="32" fill="#a78bfa" text-anchor="middle" dominant-baseline="middle">[dev] ${encodeURIComponent(prompt.slice(0, 40))}</text></svg>`;
     const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
     return res.json({ ok: true, imageUrl: dataUrl, model, ratio, prompt, dev: true });
@@ -1359,7 +1471,7 @@ app.post("/api/generate/image", async (req, res) => {
   try {
     const createRes = await fetch("https://api.replicate.com/v1/predictions", {
       method: "POST",
-      headers: { Authorization: `Bearer ${REPLICATE_TOKEN}`, "Content-Type": "application/json", "Prefer": "wait" },
+      headers: { Authorization: `Bearer ${replicateKey}`, "Content-Type": "application/json", "Prefer": "wait" },
       body: JSON.stringify({ version: modelId.includes(":") ? modelId.split(":")[1] : undefined, model: modelId.includes(":") ? undefined : modelId, input }),
       signal: AbortSignal.timeout(30000),
     });
@@ -1369,7 +1481,7 @@ app.post("/api/generate/image", async (req, res) => {
 
     let output = prediction.output;
     // If not done immediately, poll
-    if (!output && prediction.id) output = await pollReplicate(prediction.id, REPLICATE_TOKEN);
+    if (!output && prediction.id) output = await pollReplicate(prediction.id, replicateKey);
     if (!output) throw new Error("No output from model");
 
     const imageUrl = Array.isArray(output) ? output[0] : output;

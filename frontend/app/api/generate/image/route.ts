@@ -1,15 +1,40 @@
 export const dynamic = 'force-dynamic';
 
 /* ─── Config ─────────────────────────────────────────────────────
- * Supported providers determined by available env vars:
- *   REPLICATE_API_TOKEN  → Replicate (FLUX, SDXL, ByteDance Lightning)
- *   OPENAI_API_KEY       → OpenAI (DALL·E 3)
- *   OPENROUTER_API_KEY   → OpenRouter (router to many models)
+ * API keys are loaded from the backend DB at runtime.
+ * Env vars (REPLICATE_API_TOKEN, OPENAI_API_KEY, OPENROUTER_API_KEY)
+ * are used as fallback when no DB value is set.
  * ──────────────────────────────────────────────────────────────── */
 
-const REPLICATE_TOKEN = process.env.REPLICATE_API_TOKEN ?? '';
-const OPENAI_KEY = process.env.OPENAI_API_KEY ?? '';
-const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY ?? '';
+const BACKEND = process.env.BACKEND_URL ?? 'http://backend:3011';
+
+type ProviderKeys = {
+  replicate: string;
+  openai: string;
+  openrouter: string;
+};
+
+async function fetchProviderKeys(): Promise<ProviderKeys> {
+  try {
+    const res = await fetch(`${BACKEND}/api/settings/providers`, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) throw new Error('backend unavailable');
+    const data = await res.json() as Record<string, string>;
+    return {
+      replicate: data.replicate || process.env.REPLICATE_API_TOKEN || '',
+      openai: data.openai || process.env.OPENAI_API_KEY || '',
+      openrouter: data.openrouter || process.env.OPENROUTER_API_KEY || '',
+    };
+  } catch {
+    // Fallback to env vars if backend is unavailable
+    return {
+      replicate: process.env.REPLICATE_API_TOKEN || '',
+      openai: process.env.OPENAI_API_KEY || '',
+      openrouter: process.env.OPENROUTER_API_KEY || '',
+    };
+  }
+}
 
 type GenerateRequest = {
   prompt: string;
@@ -20,12 +45,17 @@ type GenerateRequest = {
 
 type GenerateResult = { url: string } | { error: string };
 
-/* ─── Model alias → Replicate full path ─────────────────────────── */
+/* ─── Model aliases ─────────────────────────────────────────────── */
 const MODEL_ALIASES: Record<string, string> = {
+  // Free — Replicate
   'flux-schnell':   'black-forest-labs/FLUX.1-schnell',
   'flux-dev':       'black-forest-labs/FLUX.1-dev',
   'sdxl':           'stability-ai/sdxl',
   'sdxl-lightning': 'bytedance/sdxl-lightning-4step',
+  // Paid — OpenAI
+  'dall-e-3':       'openai/dall-e-3',
+  // Paid — Midjourney via OpenRouter (best available substitute)
+  'midjourney':     'openai/dall-e-3',
 };
 
 function resolveModel(model: string): string {
@@ -36,25 +66,26 @@ function resolveModel(model: string): string {
 async function generate(req: GenerateRequest): Promise<GenerateResult> {
   const { prompt, width = 1024, height = 1024 } = req;
   const model = resolveModel(req.model);
+  const keys = await fetchProviderKeys();
 
-  // DALL·E 3 via OpenAI
-  if (model.startsWith('openai/') && OPENAI_KEY) {
-    return generateOpenAI(prompt, width, height);
+  // DALL·E 3 via OpenAI direct
+  if (model.startsWith('openai/') && keys.openai) {
+    return generateOpenAI(prompt, width, height, keys.openai);
   }
 
-  // OpenRouter (routes to many providers)
-  if (OPENROUTER_KEY) {
-    return generateOpenRouter(prompt, model, width, height);
+  // OpenRouter (routes to many providers — also handles openai/* if no direct key)
+  if (keys.openrouter) {
+    return generateOpenRouter(prompt, model, width, height, keys.openrouter);
   }
 
   // Replicate (FLUX, SDXL, ByteDance Lightning, etc.)
-  if (REPLICATE_TOKEN) {
-    return generateReplicate(prompt, model, width, height);
+  if (keys.replicate) {
+    return generateReplicate(prompt, model, width, height, keys.replicate);
   }
 
   return {
     error:
-      'Aucun provider configuré. Ajoutez REPLICATE_API_TOKEN, OPENAI_API_KEY ou OPENROUTER_API_KEY dans les variables d\'environnement.',
+      'Aucun provider configuré. Ajoutez vos clés API dans Paramètres → Connexions.',
   };
 }
 
@@ -63,8 +94,8 @@ async function generateOpenAI(
   prompt: string,
   width: number,
   height: number,
+  apiKey: string,
 ): Promise<GenerateResult> {
-  // Map dimensions to DALL·E 3 supported sizes
   const size =
     width === height ? '1024x1024' : width > height ? '1792x1024' : '1024x1792';
 
@@ -72,7 +103,7 @@ async function generateOpenAI(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${OPENAI_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({ model: 'dall-e-3', prompt, n: 1, size }),
     signal: AbortSignal.timeout(60_000),
@@ -95,13 +126,13 @@ async function generateOpenRouter(
   model: string,
   width: number,
   height: number,
+  apiKey: string,
 ): Promise<GenerateResult> {
-  // OpenRouter image generation endpoint (OpenAI-compatible)
   const res = await fetch('https://openrouter.ai/api/v1/images/generations', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${OPENROUTER_KEY}`,
+      Authorization: `Bearer ${apiKey}`,
       'HTTP-Referer': 'https://sona.beniben.dev',
       'X-Title': 'Sona Dashboard',
     },
@@ -123,10 +154,7 @@ async function generateOpenRouter(
   const item = data.data?.[0];
   if (!item) return { error: 'OpenRouter: no image in response' };
   if (item.url) return { url: item.url };
-  // base64 fallback — unlikely but handle it
-  if (item.b64_json) {
-    return { url: `data:image/png;base64,${item.b64_json}` };
-  }
+  if (item.b64_json) return { url: `data:image/png;base64,${item.b64_json}` };
   return { error: 'OpenRouter: no URL or base64 in response' };
 }
 
@@ -136,16 +164,13 @@ async function generateReplicate(
   model: string,
   width: number,
   height: number,
+  token: string,
 ): Promise<GenerateResult> {
-  // Replicate model IDs use owner/name format; version pinning is optional
-  // We call the predictions API and poll for result
-  const modelPath = model.includes(':') ? model : model; // supports version hash if present
-
-  const createRes = await fetch(`https://api.replicate.com/v1/models/${modelPath}/predictions`, {
+  const createRes = await fetch(`https://api.replicate.com/v1/models/${model}/predictions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Token ${REPLICATE_TOKEN}`,
+      Authorization: `Token ${token}`,
     },
     body: JSON.stringify({
       input: {
@@ -166,11 +191,9 @@ async function generateReplicate(
   }
 
   const prediction = await createRes.json() as { id?: string; error?: string; status?: string; urls?: { get?: string } };
-
   if (prediction.error) return { error: prediction.error };
   if (!prediction.id) return { error: 'Replicate: no prediction ID returned' };
 
-  // Poll until done (max 90 s)
   const pollUrl = prediction.urls?.get ?? `https://api.replicate.com/v1/predictions/${prediction.id}`;
   const deadline = Date.now() + 90_000;
 
@@ -178,7 +201,7 @@ async function generateReplicate(
     await new Promise((r) => setTimeout(r, 2000));
 
     const pollRes = await fetch(pollUrl, {
-      headers: { Authorization: `Token ${REPLICATE_TOKEN}` },
+      headers: { Authorization: `Token ${token}` },
       signal: AbortSignal.timeout(10_000),
     });
 
@@ -199,7 +222,6 @@ async function generateReplicate(
     if (poll.status === 'failed' || poll.status === 'canceled') {
       return { error: poll.error ?? `Replicate: generation ${poll.status}` };
     }
-    // else: 'starting' or 'processing' → continue polling
   }
 
   return { error: 'Replicate: timeout — generation took too long' };

@@ -7,13 +7,17 @@ interface Model {
   id: string;
   label: string;
   provider: string;
+  tier: 'free' | 'paid';
 }
 
 const MODELS: Model[] = [
-  { id: 'flux-schnell', label: 'FLUX.1 Schnell', provider: 'Black Forest Labs' },
-  { id: 'flux-dev',     label: 'FLUX.1 Dev',     provider: 'Black Forest Labs' },
-  { id: 'sdxl',         label: 'SDXL 1.0',        provider: 'Stability AI' },
-  { id: 'sdxl-lightning', label: 'SDXL Lightning', provider: 'ByteDance' },
+  // Free models (via Replicate)
+  { id: 'flux-schnell',   label: 'FLUX.1 Schnell',      provider: 'Black Forest Labs', tier: 'free' },
+  { id: 'sdxl',           label: 'Stable Diffusion XL', provider: 'Stability AI',      tier: 'free' },
+  { id: 'sdxl-lightning', label: 'SDXL Lightning',      provider: 'ByteDance',         tier: 'free' },
+  // Paid models (require API key in Settings → Connexions)
+  { id: 'dall-e-3',       label: 'DALL·E 3',            provider: 'OpenAI',            tier: 'paid' },
+  { id: 'midjourney',     label: 'Midjourney',           provider: 'Midjourney',        tier: 'paid' },
 ];
 
 const RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4'] as const;
@@ -197,7 +201,7 @@ export default function ImageGenModal() {
           >
             {MODELS.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.label} — {m.provider}
+                {m.label} — {m.provider}{m.tier === 'paid' ? ' (payant)' : ' (gratuit)'}
               </option>
             ))}
           </select>

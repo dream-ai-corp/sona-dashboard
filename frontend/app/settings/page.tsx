@@ -12,9 +12,15 @@ import {
   Volume2,
   RefreshCw,
   QrCode,
+  Key,
+  CheckCircle,
+  XCircle,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 const SONA_API = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:3011';
 
 type Tab = 'general' | 'connections';
 
@@ -312,6 +318,237 @@ function GeneralTab() {
   );
 }
 
+type ProviderTestState = 'idle' | 'testing' | 'ok' | 'error';
+
+interface ProviderRowProps {
+  label: string;
+  provider: string;
+  placeholder: string;
+  initialValue: string;
+  onSaved: () => void;
+}
+
+function ProviderRow({ label, provider, placeholder, initialValue, onSaved }: ProviderRowProps) {
+  const [value, setValue] = useState(initialValue);
+  const [visible, setVisible] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testState, setTestState] = useState<ProviderTestState>('idle');
+  const [testMsg, setTestMsg] = useState('');
+
+  // Sync when parent re-fetches
+  useEffect(() => { setValue(initialValue); }, [initialValue]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await fetch(`${BACKEND_URL}/api/settings/providers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, api_key: value }),
+      });
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    setTestState('testing');
+    setTestMsg('');
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/settings/providers/${provider}/test`, {
+        method: 'POST',
+      });
+      const data = await res.json() as { ok: boolean; error?: string };
+      setTestState(data.ok ? 'ok' : 'error');
+      setTestMsg(data.ok ? 'Connexion réussie' : (data.error ?? 'Échec'));
+    } catch (e) {
+      setTestState('error');
+      setTestMsg(e instanceof Error ? e.message : 'Erreur réseau');
+    }
+    setTimeout(() => setTestState('idle'), 4000);
+  };
+
+  const hasKey = value.trim().length > 0;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <label style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>{label}</label>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: 1 }}>
+          <input
+            data-testid={`provider-key-input-${provider}`}
+            type={visible ? 'text' : 'password'}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={placeholder}
+            style={{
+              width: '100%',
+              padding: '10px 40px 10px 12px',
+              borderRadius: '8px',
+              background: 'rgba(15,15,26,0.8)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              color: '#e2e8f0',
+              fontFamily: 'monospace',
+              fontSize: '12px',
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+            onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(167,139,250,0.5)'; }}
+            onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
+          />
+          <button
+            onClick={() => setVisible((v) => !v)}
+            style={{
+              position: 'absolute',
+              right: '10px',
+              top: '50%',
+              transform: 'translateY(-50%)',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: '#64748b',
+              padding: '2px',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+            title={visible ? 'Masquer' : 'Afficher'}
+          >
+            {visible ? <EyeOff size={14} /> : <Eye size={14} />}
+          </button>
+        </div>
+
+        <button
+          data-testid={`provider-key-save-${provider}`}
+          onClick={handleSave}
+          disabled={saving}
+          style={{
+            padding: '10px 14px',
+            borderRadius: '8px',
+            background: 'rgba(124,58,237,0.15)',
+            border: '1px solid rgba(124,58,237,0.3)',
+            color: '#a78bfa',
+            fontSize: '12px',
+            fontWeight: 600,
+            cursor: saving ? 'not-allowed' : 'pointer',
+            fontFamily: 'inherit',
+            whiteSpace: 'nowrap',
+            opacity: saving ? 0.6 : 1,
+          }}
+        >
+          {saving ? 'Sauvegarde…' : 'Sauvegarder'}
+        </button>
+
+        <button
+          data-testid={`provider-key-test-${provider}`}
+          onClick={handleTest}
+          disabled={!hasKey || testState === 'testing'}
+          style={{
+            padding: '10px 14px',
+            borderRadius: '8px',
+            background:
+              testState === 'ok' ? 'rgba(34,197,94,0.1)' :
+              testState === 'error' ? 'rgba(239,68,68,0.1)' :
+              'rgba(255,255,255,0.03)',
+            border:
+              testState === 'ok' ? '1px solid rgba(34,197,94,0.3)' :
+              testState === 'error' ? '1px solid rgba(239,68,68,0.3)' :
+              '1px solid rgba(255,255,255,0.08)',
+            color:
+              testState === 'ok' ? '#4ade80' :
+              testState === 'error' ? '#f87171' :
+              '#64748b',
+            fontSize: '12px',
+            fontWeight: 600,
+            cursor: (!hasKey || testState === 'testing') ? 'not-allowed' : 'pointer',
+            fontFamily: 'inherit',
+            whiteSpace: 'nowrap',
+            opacity: (!hasKey || testState === 'testing') ? 0.5 : 1,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '5px',
+          }}
+        >
+          {testState === 'testing' && <RefreshCw size={11} style={{ animation: 'spin 1s linear infinite' }} />}
+          {testState === 'ok' && <CheckCircle size={11} />}
+          {testState === 'error' && <XCircle size={11} />}
+          {testState === 'testing' ? 'Test…' : testState === 'ok' ? testMsg : testState === 'error' ? testMsg : 'Tester'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ProviderApiKeysSection() {
+  const [keys, setKeys] = useState<Record<string, string>>({});
+
+  const fetchKeys = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/settings/providers`);
+      if (res.ok) {
+        const data = await res.json() as Record<string, string>;
+        setKeys(data);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => { fetchKeys(); }, [fetchKeys]);
+
+  const providers: Array<{ provider: string; label: string; placeholder: string }> = [
+    { provider: 'openrouter', label: 'OpenRouter API Key', placeholder: 'sk-or-v1-…' },
+    { provider: 'replicate',  label: 'Replicate API Token', placeholder: 'r8_…' },
+    { provider: 'openai',     label: 'OpenAI API Key', placeholder: 'sk-…' },
+    { provider: 'huggingface', label: 'HuggingFace API Key', placeholder: 'hf_…' },
+  ];
+
+  const configuredCount = providers.filter((p) => keys[p.provider]?.trim()).length;
+
+  return (
+    <div
+      className="glass"
+      style={{ borderRadius: '16px', padding: '24px' }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px' }}>
+        <Key size={15} color="#f59e0b" />
+        <h2 style={{ fontSize: '14px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>
+          Provider API Keys
+        </h2>
+        <span
+          data-testid="provider-keys-configured-count"
+          style={{
+            marginLeft: 'auto',
+            fontSize: '11px',
+            padding: '2px 10px',
+            borderRadius: '20px',
+            background: configuredCount > 0 ? 'rgba(34,197,94,0.1)' : 'rgba(100,116,139,0.1)',
+            border: configuredCount > 0 ? '1px solid rgba(34,197,94,0.25)' : '1px solid rgba(100,116,139,0.25)',
+            color: configuredCount > 0 ? '#4ade80' : '#64748b',
+          }}
+        >
+          {configuredCount > 0 ? `${configuredCount} configuré${configuredCount > 1 ? 's' : ''}` : 'Aucun provider configuré'}
+        </span>
+      </div>
+
+      <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 20px' }}>
+        Clés utilisées pour la génération d&apos;images et autres fonctions IA. Stockées en base locale.
+      </p>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {providers.map((p) => (
+          <ProviderRow
+            key={p.provider}
+            provider={p.provider}
+            label={p.label}
+            placeholder={p.placeholder}
+            initialValue={keys[p.provider] ?? ''}
+            onSaved={fetchKeys}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ConnectionsTab() {
   const [wa, setWa] = useState<WhatsAppState>({ status: 'LOADING' });
   const [toggling, setToggling] = useState(false);
@@ -488,6 +725,9 @@ function ConnectionsTab() {
           </div>
         )}
       </div>
+
+      {/* Provider API Keys */}
+      <ProviderApiKeysSection />
     </div>
   );
 }
