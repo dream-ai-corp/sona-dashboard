@@ -5,7 +5,7 @@ const fs = require("fs");
 const path = require("path");
 const cron = require("node-cron");
 const fetch = require("node-fetch");
-const { randomUUID } = require("crypto");
+const { randomUUID, createHmac } = require("crypto");
 const TimeMatcher = require("node-cron/src/time-matcher");
 const { runDueJobs } = require("./scheduler.js");
 
@@ -1363,7 +1363,7 @@ app.post("/api/recurring-jobs/:id/run", async (req, res) => {
 // POST /api/settings/providers  → { provider, api_key } saves/updates a key
 // POST /api/settings/providers/:provider/test → tests a provider key
 
-const VALID_PROVIDERS = ["replicate", "openai", "openrouter", "huggingface", "together", "fal"];
+const VALID_PROVIDERS = ["replicate", "openai", "openrouter", "huggingface", "together", "fal", "kling", "veo"];
 
 app.get("/api/settings/providers", (req, res) => {
   const rows = db.prepare("SELECT provider, api_key FROM provider_keys").all();
@@ -1461,6 +1461,33 @@ app.post("/api/settings/providers/:provider/test", async (req, res) => {
       // fal.ai returns 200 or 404/405 on health but 401 on bad key
       testOk = r.status !== 401 && r.status !== 403;
       if (!testOk) errorMsg = `Fal.ai HTTP ${r.status}`;
+    } else if (provider === "kling") {
+      // Validate key format: "accessKey:secretKey"
+      if (!apiKey.includes(":")) {
+        testOk = false;
+        errorMsg = "Kling key must be in format 'accessKey:secretKey'";
+      } else {
+        try {
+          const jwt = buildKlingJwt(apiKey);
+          const r = await fetch("https://api.klingai.com/v1/account/costs", {
+            headers: { Authorization: `Bearer ${jwt}` },
+            signal: AbortSignal.timeout(8000),
+          });
+          // 200 = valid key; 401/403 = bad key; anything else = key might be ok
+          testOk = r.status !== 401 && r.status !== 403;
+          if (!testOk) errorMsg = `Kling HTTP ${r.status}`;
+        } catch (e) {
+          testOk = false;
+          errorMsg = e.message;
+        }
+      }
+    } else if (provider === "veo") {
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
+        { signal: AbortSignal.timeout(8000) }
+      );
+      testOk = r.ok;
+      if (!testOk) errorMsg = `Google API HTTP ${r.status}`;
     }
 
     res.json({ ok: testOk, error: testOk ? undefined : errorMsg });
@@ -1606,6 +1633,8 @@ function getProviderKey(provider) {
   if (provider === "huggingface") return process.env.HUGGINGFACE_API_KEY || "";
   if (provider === "together") return process.env.TOGETHER_API_KEY || "";
   if (provider === "fal") return process.env.FAL_API_KEY || "";
+  if (provider === "kling") return process.env.KLING_API_KEY || "";
+  if (provider === "veo") return process.env.VEO_API_KEY || "";
   return "";
 }
 
@@ -1889,6 +1918,39 @@ app.post("/api/generate/image", async (req, res) => {
   }
 });
 
+// ── Video Models Catalog ───────────────────────────────────────────────────────
+// GET /api/models/video → list of video models available based on configured providers
+
+const VIDEO_MODELS_CATALOG = [
+  // ── Always available (shown even without a key — dev mode placeholder) ──
+  { id: "wan2.1",       label: "Wan 2.1 T2V 480p",              provider: "replicate", tier: "free" },
+  { id: "cogvideox",    label: "CogVideoX 5B",                  provider: "replicate", tier: "free" },
+  { id: "animatediff",  label: "AnimateDiff",                    provider: "replicate", tier: "free" },
+  { id: "stable-video", label: "Stable Video Diffusion",         provider: "replicate", tier: "free" },
+  { id: "mochi-1",      label: "Mochi 1",                        provider: "replicate", tier: "free" },
+  // ── Kling (needs kling key: "accessKey:secretKey") ────────────────────────
+  { id: "kling-v1",     label: "Kling v1 (standard)",           provider: "kling",     tier: "free",  note: "66 crédits/jour gratuits" },
+  { id: "kling-v1-5",   label: "Kling v1.5 (pro)",              provider: "kling",     tier: "free",  note: "66 crédits/jour gratuits" },
+  { id: "kling-v2",     label: "Kling v2 / 3.0 (master)",       provider: "kling",     tier: "free",  note: "66 crédits/jour gratuits" },
+  // ── Google Veo (needs veo key: Google AI Studio API key) ──────────────────
+  { id: "veo-2",        label: "Google Veo 2 (HD)",             provider: "veo",       tier: "free",  note: "100 crédits/mois avec compte Google" },
+];
+
+app.get("/api/models/video", (req, res) => {
+  const replicateKey = getProviderKey("replicate");
+  const falKey       = getProviderKey("fal");
+  const klingKey     = getProviderKey("kling");
+  const veoKey       = getProviderKey("veo");
+
+  const available = VIDEO_MODELS_CATALOG.filter((m) => {
+    if (m.provider === "replicate") return replicateKey || falKey || true; // always show (dev placeholder)
+    if (m.provider === "kling")     return !!klingKey;
+    if (m.provider === "veo")       return !!veoKey;
+    return false;
+  });
+  res.json({ ok: true, models: available });
+});
+
 // ── Video Generation ──────────────────────────────────────────────────────────
 // POST /api/generate/video          → { ok: true, jobId }
 // GET  /api/generate/video/:jobId   → { ok, status, progress, message, url?, error? }
@@ -1996,6 +2058,79 @@ async function pollFalVideo(endpoint, requestId, apiKey, jobId, maxWaitMs = 180_
   throw new Error("fal.ai: timeout — video generation took too long");
 }
 
+// ── Kling JWT helper ─────────────────────────────────────────────────────────
+// Kling API uses a JWT signed with HS256.
+// Provider key format stored: "accessKey:secretKey"
+function buildKlingJwt(apiKeyPair) {
+  const [accessKey, secretKey] = apiKeyPair.split(":");
+  if (!accessKey || !secretKey) throw new Error("Kling key must be 'accessKey:secretKey'");
+  const now = Math.floor(Date.now() / 1000);
+  const b64url = (obj) =>
+    Buffer.from(JSON.stringify(obj)).toString("base64url");
+  const header  = b64url({ alg: "HS256", typ: "JWT" });
+  const payload = b64url({ iss: accessKey, exp: now + 1800, nbf: now - 5 });
+  const sig = createHmac("sha256", secretKey)
+    .update(`${header}.${payload}`)
+    .digest("base64url");
+  return `${header}.${payload}.${sig}`;
+}
+
+async function pollKlingVideo(taskId, jwt, jobId, maxWaitMs = 300_000) {
+  const startedAt = Date.now();
+  const deadline  = startedAt + maxWaitMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const r = await fetch(
+      `https://api.klingai.com/v1/videos/text2video/${taskId}`,
+      { headers: { Authorization: `Bearer ${jwt}` }, signal: AbortSignal.timeout(10_000) }
+    );
+    if (!r.ok) { const t = await r.text(); throw new Error(`Kling poll ${r.status}: ${t.slice(0, 200)}`); }
+    const data = await r.json();
+    const task = data.data;
+    if (!task) throw new Error("Kling: unexpected response shape");
+    const st = task.task_status;
+    if (st === "succeed") {
+      const videoUrl = task.task_result?.videos?.[0]?.url;
+      if (!videoUrl) throw new Error("Kling: no video URL in result");
+      return { url: videoUrl };
+    }
+    if (st === "failed") throw new Error(task.task_status_msg || "Kling: generation failed");
+    const elapsed = Date.now() - startedAt;
+    const prog = Math.min(95, 15 + Math.round((elapsed / maxWaitMs) * 80));
+    updateVideoJob(jobId, { progress: prog, message: `Kling génération… (${st})` });
+  }
+  throw new Error("Kling: timeout — video generation took too long");
+}
+
+// ── Veo helpers ───────────────────────────────────────────────────────────────
+async function pollVeoOperation(operationName, apiKey, jobId, maxWaitMs = 300_000) {
+  const startedAt = Date.now();
+  const deadline  = startedAt + maxWaitMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 8000));
+    const r = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${apiKey}`,
+      { signal: AbortSignal.timeout(15_000) }
+    );
+    if (!r.ok) { const t = await r.text(); throw new Error(`Veo poll ${r.status}: ${t.slice(0, 200)}`); }
+    const data = await r.json();
+    if (data.error) throw new Error(data.error.message || "Veo: API error");
+    if (data.done) {
+      const videos = data.response?.generatedSamples;
+      if (!videos?.length) throw new Error("Veo: no samples in response");
+      // Veo returns a base64-encoded video or a URI
+      const sample = videos[0];
+      const videoUri = sample.video?.uri;
+      if (!videoUri) throw new Error("Veo: no video URI in sample");
+      return { url: videoUri };
+    }
+    const elapsed = Date.now() - startedAt;
+    const prog = Math.min(95, 15 + Math.round((elapsed / maxWaitMs) * 80));
+    updateVideoJob(jobId, { progress: prog, message: "Veo génération en cours…" });
+  }
+  throw new Error("Veo: timeout — video generation took too long");
+}
+
 async function runVideoGeneration(jobId, prompt, model, duration) {
   updateVideoJob(jobId, { status: "running", progress: 5, message: "Connexion au provider…" });
   try {
@@ -2054,6 +2189,73 @@ async function runVideoGeneration(jobId, prompt, model, duration) {
       updateVideoJob(jobId, { progress: 15, message: "Prédiction créée, génération en cours…" });
       const result = await pollReplicateVideo(prediction.id, replicateKey, jobId);
       updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Vidéo générée !", url: result.url });
+      return;
+    }
+
+    // ── Kling ──────────────────────────────────────────────────────────────────
+    const klingKey = getProviderKey("kling");
+    if (klingKey && (model === "kling-v1" || model === "kling-v1-5" || model === "kling-v2")) {
+      updateVideoJob(jobId, { progress: 10, message: "Soumission à Kling AI…" });
+      const KLING_MODEL_MAP = { "kling-v1": "kling-v1", "kling-v1-5": "kling-v1-5", "kling-v2": "kling-v2-master" };
+      const jwt = buildKlingJwt(klingKey);
+      const submitRes = await fetch("https://api.klingai.com/v1/videos/text2video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${jwt}` },
+        body: JSON.stringify({
+          model_name: KLING_MODEL_MAP[model],
+          prompt,
+          duration: String(duration),
+          aspect_ratio: "16:9",
+          cfg_scale: 0.5,
+          mode: "std",
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!submitRes.ok) {
+        const err = await submitRes.json().catch(() => ({}));
+        throw new Error(err.message ?? `Kling submit error ${submitRes.status}`);
+      }
+      const submission = await submitRes.json();
+      if (submission.code !== 0) throw new Error(submission.message || "Kling: submit failed");
+      const taskId = submission.data?.task_id;
+      if (!taskId) throw new Error("Kling: no task_id in response");
+      updateVideoJob(jobId, { progress: 15, message: "Tâche Kling créée, génération en cours…" });
+      // JWT expires in 30min; renew for polling
+      const pollJwt = buildKlingJwt(klingKey);
+      const result = await pollKlingVideo(taskId, pollJwt, jobId);
+      updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Vidéo Kling générée !", url: result.url });
+      return;
+    }
+
+    // ── Google Veo ────────────────────────────────────────────────────────────
+    const veoKey = getProviderKey("veo");
+    if (veoKey && model === "veo-2") {
+      updateVideoJob(jobId, { progress: 10, message: "Soumission à Google Veo…" });
+      const submitRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/veo-2.0-generate-001:predictLongRunning?key=${veoKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            instances: [{ prompt }],
+            parameters: {
+              aspectRatio: "16:9",
+              durationSeconds: duration,
+              sampleCount: 1,
+            },
+          }),
+          signal: AbortSignal.timeout(30_000),
+        }
+      );
+      if (!submitRes.ok) {
+        const err = await submitRes.json().catch(() => ({}));
+        throw new Error(err.error?.message ?? `Veo submit error ${submitRes.status}`);
+      }
+      const operation = await submitRes.json();
+      if (!operation.name) throw new Error("Veo: no operation name in response");
+      updateVideoJob(jobId, { progress: 15, message: "Opération Veo créée, génération en cours…" });
+      const result = await pollVeoOperation(operation.name, veoKey, jobId);
+      updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Vidéo Veo générée !", url: result.url });
       return;
     }
 
