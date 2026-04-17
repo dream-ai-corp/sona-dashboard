@@ -760,6 +760,8 @@ function ProviderApiKeysSection() {
     { provider: 'replicate',  label: 'Replicate API Token', placeholder: 'r8_…' },
     { provider: 'openai',     label: 'OpenAI API Key', placeholder: 'sk-…' },
     { provider: 'huggingface', label: 'HuggingFace API Key', placeholder: 'hf_…' },
+    { provider: 'together',   label: 'Together AI API Key (free credits)', placeholder: 'together-…' },
+    { provider: 'fal',        label: 'Fal.ai API Key (free credits)', placeholder: 'fal-…' },
   ];
 
   const configuredCount = providers.filter((p) => keys[p.provider]?.trim()).length;

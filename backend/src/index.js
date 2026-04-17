@@ -1349,7 +1349,7 @@ app.post("/api/recurring-jobs/:id/run", async (req, res) => {
 // POST /api/settings/providers  → { provider, api_key } saves/updates a key
 // POST /api/settings/providers/:provider/test → tests a provider key
 
-const VALID_PROVIDERS = ["replicate", "openai", "openrouter", "huggingface"];
+const VALID_PROVIDERS = ["replicate", "openai", "openrouter", "huggingface", "together", "fal"];
 
 app.get("/api/settings/providers", (req, res) => {
   const rows = db.prepare("SELECT provider, api_key FROM provider_keys").all();
@@ -1432,6 +1432,21 @@ app.post("/api/settings/providers/:provider/test", async (req, res) => {
       });
       testOk = r.ok;
       if (!testOk) errorMsg = `HuggingFace HTTP ${r.status}`;
+    } else if (provider === "together") {
+      const r = await fetch("https://api.together.xyz/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      testOk = r.ok;
+      if (!testOk) errorMsg = `Together.ai HTTP ${r.status}`;
+    } else if (provider === "fal") {
+      const r = await fetch("https://queue.fal.run/fal-ai/flux/health", {
+        headers: { Authorization: `Key ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      // fal.ai returns 200 or 404/405 on health but 401 on bad key
+      testOk = r.status !== 401 && r.status !== 403;
+      if (!testOk) errorMsg = `Fal.ai HTTP ${r.status}`;
     }
 
     res.json({ ok: testOk, error: testOk ? undefined : errorMsg });
@@ -1497,6 +1512,46 @@ app.get("/api/models/image", async (req, res) => {
     }
   }
 
+  // Together.ai — fetch dynamically, filter type === "image"
+  const togetherKey = getProviderKey("together");
+  if (togetherKey) {
+    try {
+      const r = await fetch("https://api.together.xyz/v1/models", {
+        headers: { Authorization: `Bearer ${togetherKey}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        const imageModels = (data || []).filter((m) => m.type === "image");
+        for (const m of imageModels) {
+          models.push({
+            id: `together:${m.id}`,
+            label: m.display_name || m.id,
+            provider: "together",
+            tier: "free",
+          });
+        }
+      } else {
+        console.error("[models/image] Together.ai HTTP", r.status);
+      }
+    } catch (err) {
+      console.error("[models/image] Together.ai fetch failed:", err.message);
+    }
+  }
+
+  // Fal.ai — static list of free models
+  const falKey = getProviderKey("fal");
+  if (falKey) {
+    const FAL_IMAGE_MODELS = [
+      { id: "fal:fal-ai/flux",          label: "FLUX (Fal.ai)",          tier: "free" },
+      { id: "fal:fal-ai/flux-realism",   label: "FLUX Realism (Fal.ai)", tier: "free" },
+      { id: "fal:fal-ai/fast-sdxl",      label: "Fast SDXL (Fal.ai)",    tier: "free" },
+    ];
+    for (const m of FAL_IMAGE_MODELS) {
+      models.push({ ...m, provider: "fal" });
+    }
+  }
+
   // Fallback: return static Replicate list when no providers are configured
   if (models.length === 0) {
     models.push(...REPLICATE_IMAGE_MODELS);
@@ -1520,6 +1575,8 @@ function getProviderKey(provider) {
   if (provider === "openai") return process.env.OPENAI_API_KEY || "";
   if (provider === "openrouter") return process.env.OPENROUTER_API_KEY || "";
   if (provider === "huggingface") return process.env.HUGGINGFACE_API_KEY || "";
+  if (provider === "together") return process.env.TOGETHER_API_KEY || "";
+  if (provider === "fal") return process.env.FAL_API_KEY || "";
   return "";
 }
 
@@ -1557,10 +1614,97 @@ async function pollReplicate(predictionId, token, maxWaitMs = 120000) {
 
 // Determine which provider to use for a given model ID
 function resolveImageProvider(model) {
+  if (model.startsWith("together:")) return "together";
+  if (model.startsWith("fal:")) return "fal";
   if (MODEL_IDS[model]) return "replicate";
   // OpenRouter models contain a "/" (e.g. "openai/dall-e-3", "stability-ai/sd3")
   if (model.includes("/")) return "openrouter";
   return "replicate";
+}
+
+async function generateWithTogether(prompt, model, size, apiKey) {
+  // Strip "together:" prefix to get the actual model id
+  const modelId = model.startsWith("together:") ? model.slice(9) : model;
+  const res = await fetch("https://api.together.xyz/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: modelId,
+      prompt,
+      n: 1,
+      width: size.width,
+      height: size.height,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    let errMsg = `Together.ai error ${res.status}`;
+    try { errMsg = JSON.parse(text)?.error?.message || errMsg; } catch {}
+    throw new Error(errMsg);
+  }
+
+  const data = await res.json();
+  const item = data.data?.[0];
+  if (item?.url) return { imageUrl: item.url };
+  if (item?.b64_json) return { imageUrl: `data:image/png;base64,${item.b64_json}` };
+  throw new Error("Together.ai: no image URL in response");
+}
+
+async function generateWithFal(prompt, model, size, apiKey) {
+  // Strip "fal:" prefix to get the actual model id (e.g. "fal-ai/flux")
+  const modelId = model.startsWith("fal:") ? model.slice(4) : model;
+  const submitRes = await fetch(`https://queue.fal.run/${modelId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Key ${apiKey}`,
+    },
+    body: JSON.stringify({
+      prompt,
+      image_size: { width: size.width, height: size.height },
+      num_images: 1,
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!submitRes.ok) {
+    const text = await submitRes.text().catch(() => "");
+    let errMsg = `Fal.ai submit error ${submitRes.status}`;
+    try { errMsg = JSON.parse(text)?.detail || errMsg; } catch {}
+    throw new Error(errMsg);
+  }
+
+  const job = await submitRes.json();
+
+  // If response already contains images (sync mode)
+  if (job.images?.[0]?.url) return { imageUrl: job.images[0].url };
+
+  // Otherwise poll the queue
+  const requestId = job.request_id;
+  if (!requestId) throw new Error("Fal.ai: no request_id in response");
+
+  const deadline = Date.now() + 120000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const pollRes = await fetch(`https://queue.fal.run/${modelId}/requests/${requestId}`, {
+      headers: { Authorization: `Key ${apiKey}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!pollRes.ok) continue;
+    const poll = await pollRes.json();
+    if (poll.status === "COMPLETED" || poll.images?.[0]?.url) {
+      const url = poll.images?.[0]?.url || poll.output?.images?.[0]?.url;
+      if (url) return { imageUrl: url };
+      throw new Error("Fal.ai: no image URL in completed response");
+    }
+    if (poll.status === "FAILED") throw new Error(poll.error || "Fal.ai: generation failed");
+  }
+  throw new Error("Fal.ai: timeout — generation took too long");
 }
 
 async function generateWithOpenRouter(prompt, model, size, apiKey) {
@@ -1633,9 +1777,39 @@ app.post("/api/generate/image", async (req, res) => {
   const size = RATIO_TO_SIZE[ratio] || RATIO_TO_SIZE["1:1"];
   const replicateKey = getProviderKey("replicate");
   const openrouterKey = getProviderKey("openrouter");
+  const togetherKey = getProviderKey("together");
+  const falKey = getProviderKey("fal");
 
   // Determine provider: explicit param > model-based detection > fallback to whatever is configured
   const detectedProvider = explicitProvider || resolveImageProvider(model);
+
+  // Together.ai path
+  if (detectedProvider === "together") {
+    if (!togetherKey) {
+      return res.status(400).json({ ok: false, error: "Clé Together.ai non configurée. Ajoutez-la dans Paramètres → Connexions." });
+    }
+    try {
+      const result = await generateWithTogether(prompt.trim(), model, size, togetherKey);
+      return res.json({ ok: true, ...result, model, ratio, prompt, provider: "together" });
+    } catch (err) {
+      console.error("[generate/image] Together.ai error:", err.message);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+
+  // Fal.ai path
+  if (detectedProvider === "fal") {
+    if (!falKey) {
+      return res.status(400).json({ ok: false, error: "Clé Fal.ai non configurée. Ajoutez-la dans Paramètres → Connexions." });
+    }
+    try {
+      const result = await generateWithFal(prompt.trim(), model, size, falKey);
+      return res.json({ ok: true, ...result, model, ratio, prompt, provider: "fal" });
+    } catch (err) {
+      console.error("[generate/image] Fal.ai error:", err.message);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
 
   // OpenRouter path
   if (detectedProvider === "openrouter" || (!replicateKey && openrouterKey)) {

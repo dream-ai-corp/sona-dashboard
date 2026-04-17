@@ -42,7 +42,7 @@ class MockDb {
 }
 
 // ── Extracted route logic (pure functions, no express) ────────────────────────
-const VALID_PROVIDERS = ["replicate", "openai", "openrouter", "huggingface"];
+const VALID_PROVIDERS = ["replicate", "openai", "openrouter", "huggingface", "together", "fal"];
 
 function getProviders(db) {
   const rows = db.prepare("SELECT provider, api_key FROM provider_keys").all();
@@ -81,7 +81,7 @@ describe("GET /api/settings/providers", () => {
   test("returns all providers with empty strings when nothing configured", () => {
     const db = new MockDb();
     const result = getProviders(db);
-    assert.deepStrictEqual(result, { replicate: "", openai: "", openrouter: "", huggingface: "" });
+    assert.deepStrictEqual(result, { replicate: "", openai: "", openrouter: "", huggingface: "", together: "", fal: "" });
   });
 
   test("returns stored key for configured provider", () => {

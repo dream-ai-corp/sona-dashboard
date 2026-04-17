@@ -12,6 +12,8 @@ type ProviderKeys = {
   replicate: string;
   openai: string;
   openrouter: string;
+  together: string;
+  fal: string;
 };
 
 async function fetchProviderKeys(): Promise<ProviderKeys> {
@@ -25,6 +27,8 @@ async function fetchProviderKeys(): Promise<ProviderKeys> {
       replicate: data.replicate || process.env.REPLICATE_API_TOKEN || '',
       openai: data.openai || process.env.OPENAI_API_KEY || '',
       openrouter: data.openrouter || process.env.OPENROUTER_API_KEY || '',
+      together: data.together || process.env.TOGETHER_API_KEY || '',
+      fal: data.fal || process.env.FAL_API_KEY || '',
     };
   } catch {
     // Fallback to env vars if backend is unavailable
@@ -32,6 +36,8 @@ async function fetchProviderKeys(): Promise<ProviderKeys> {
       replicate: process.env.REPLICATE_API_TOKEN || '',
       openai: process.env.OPENAI_API_KEY || '',
       openrouter: process.env.OPENROUTER_API_KEY || '',
+      together: process.env.TOGETHER_API_KEY || '',
+      fal: process.env.FAL_API_KEY || '',
     };
   }
 }
@@ -46,7 +52,7 @@ type GenerateRequest = {
 type GenerateResult = { url: string } | { error: string };
 
 /* ─── Model config with provider routing ────────────────────────── */
-type ModelConfig = { id: string; provider: 'replicate' | 'openai' | 'openrouter'; label: string };
+type ModelConfig = { id: string; provider: 'replicate' | 'openai' | 'openrouter' | 'together' | 'fal'; label: string };
 
 const MODELS: Record<string, ModelConfig> = {
   // Replicate models (free/cheap)
@@ -62,9 +68,102 @@ const MODELS: Record<string, ModelConfig> = {
 
 function resolveModel(model: string): ModelConfig {
   if (MODELS[model]) return MODELS[model];
+  // Together.ai models are prefixed with "together:"
+  if (model.startsWith('together:')) return { id: model, provider: 'together', label: model.slice(9) };
+  // Fal.ai models are prefixed with "fal:"
+  if (model.startsWith('fal:')) return { id: model, provider: 'fal', label: model.slice(4) };
   // Dynamic OpenRouter models have a "/" in their ID (e.g. "openai/dall-e-3")
   if (model.includes('/')) return { id: model, provider: 'openrouter', label: model };
   return MODELS['flux-schnell'];
+}
+
+/* ─── Together.ai ───────────────────────────────────────────────── */
+async function generateTogether(
+  prompt: string,
+  model: string,
+  width: number,
+  height: number,
+  apiKey: string,
+): Promise<GenerateResult> {
+  const modelId = model.startsWith('together:') ? model.slice(9) : model;
+  const res = await fetch('https://api.together.xyz/v1/images/generations', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ model: modelId, prompt, n: 1, width, height }),
+    signal: AbortSignal.timeout(120_000),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    return { error: (err as { error?: { message?: string } }).error?.message ?? `Together.ai error ${res.status}` };
+  }
+
+  const data = await res.json() as { data?: Array<{ url?: string; b64_json?: string }> };
+  const item = data.data?.[0];
+  if (item?.url) return { url: item.url };
+  if (item?.b64_json) return { url: `data:image/png;base64,${item.b64_json}` };
+  return { error: 'Together.ai: no image URL in response' };
+}
+
+/* ─── Fal.ai ────────────────────────────────────────────────────── */
+async function generateFal(
+  prompt: string,
+  model: string,
+  width: number,
+  height: number,
+  apiKey: string,
+): Promise<GenerateResult> {
+  const modelId = model.startsWith('fal:') ? model.slice(4) : model;
+  const submitRes = await fetch(`https://queue.fal.run/${modelId}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Key ${apiKey}`,
+    },
+    body: JSON.stringify({ prompt, image_size: { width, height }, num_images: 1 }),
+    signal: AbortSignal.timeout(30_000),
+  });
+
+  if (!submitRes.ok) {
+    const text = await submitRes.text().catch(() => '');
+    let errMsg = `Fal.ai submit error ${submitRes.status}`;
+    try { errMsg = (JSON.parse(text) as { detail?: string }).detail ?? errMsg; } catch {}
+    return { error: errMsg };
+  }
+
+  const job = await submitRes.json() as { images?: Array<{ url?: string }>; request_id?: string };
+
+  // Sync response
+  if (job.images?.[0]?.url) return { url: job.images[0].url! };
+
+  const requestId = job.request_id;
+  if (!requestId) return { error: 'Fal.ai: no request_id in response' };
+
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const pollRes = await fetch(`https://queue.fal.run/${modelId}/requests/${requestId}`, {
+      headers: { Authorization: `Key ${apiKey}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!pollRes.ok) continue;
+    const poll = await pollRes.json() as {
+      status?: string;
+      images?: Array<{ url?: string }>;
+      output?: { images?: Array<{ url?: string }> };
+      error?: string;
+    };
+    if (poll.status === 'COMPLETED' || poll.images?.[0]?.url) {
+      const url = poll.images?.[0]?.url ?? poll.output?.images?.[0]?.url;
+      if (url) return { url };
+      return { error: 'Fal.ai: no image URL in completed response' };
+    }
+    if (poll.status === 'FAILED') return { error: poll.error ?? 'Fal.ai: generation failed' };
+  }
+  return { error: 'Fal.ai: timeout — generation took too long' };
 }
 
 /* ─── Provider dispatch ─────────────────────────────────────────── */
@@ -74,6 +173,12 @@ async function generate(req: GenerateRequest): Promise<GenerateResult> {
   const keys = await fetchProviderKeys();
 
   // Route to the correct provider based on model config
+  if (cfg.provider === 'together' && keys.together) {
+    return generateTogether(prompt, cfg.id, width, height, keys.together);
+  }
+  if (cfg.provider === 'fal' && keys.fal) {
+    return generateFal(prompt, cfg.id, width, height, keys.fal);
+  }
   if (cfg.provider === 'openai' && keys.openai) {
     return generateOpenAI(prompt, width, height, keys.openai);
   }
@@ -85,6 +190,8 @@ async function generate(req: GenerateRequest): Promise<GenerateResult> {
   }
 
   // Fallback: try any available provider
+  if (keys.together) return generateTogether(prompt, cfg.id, width, height, keys.together);
+  if (keys.fal) return generateFal(prompt, cfg.id, width, height, keys.fal);
   if (keys.replicate) return generateReplicate(prompt, cfg.id, width, height, keys.replicate);
   if (keys.openrouter) return generateOpenRouter(prompt, cfg.id, width, height, keys.openrouter);
   if (keys.openai) return generateOpenAI(prompt, width, height, keys.openai);
