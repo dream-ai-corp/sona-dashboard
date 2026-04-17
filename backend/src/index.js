@@ -8,6 +8,7 @@ const fetch = require("node-fetch");
 const { randomUUID, createHmac } = require("crypto");
 const TimeMatcher = require("node-cron/src/time-matcher");
 const { runDueJobs } = require("./scheduler.js");
+const { consumeQueue } = require("./queue-consumer.js");
 
 const app = express();
 const PORT = process.env.PORT || 3011;
@@ -105,6 +106,23 @@ db.exec(`
     text TEXT NOT NULL,
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending','pass','fail')),
     sort_order INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS agent_queue (
+    id TEXT PRIMARY KEY,
+    item_id TEXT,
+    item_text TEXT,
+    project_id TEXT NOT NULL,
+    sprint_id TEXT,
+    priority INTEGER NOT NULL DEFAULT 2,
+    status TEXT DEFAULT 'queued' CHECK(status IN ('queued','running','done','failed','cancelled')),
+    scheduled_at INTEGER,
+    started_at INTEGER,
+    completed_at INTEGER,
+    agent_job_id TEXT,
+    estimated_duration_sec INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
   );
 `);
 
@@ -1397,6 +1415,132 @@ app.post("/api/recurring-jobs/:id/run", async (req, res) => {
   }
 });
 
+// ── Agent Queue ──────────────────────────────────────────────────────────────
+
+app.get("/api/queue", (_req, res) => {
+  const rows = db.prepare(
+    "SELECT * FROM agent_queue ORDER BY sort_order ASC, priority ASC, created_at ASC"
+  ).all();
+  res.json(rows);
+});
+
+app.post("/api/queue/add", (req, res) => {
+  const { item_id, item_text, project_id, sprint_id, priority = 2 } = req.body ?? {};
+  if (!project_id) {
+    return res.status(400).json({ error: "project_id is required" });
+  }
+  const id = randomUUID();
+  const maxOrder = db.prepare(
+    "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM agent_queue WHERE status = 'queued'"
+  ).get();
+  // Estimate duration from past jobs of this project
+  const avg = db.prepare(
+    `SELECT AVG(completed_at - started_at) / 1000 AS avg_sec
+     FROM jobs
+     WHERE project = ? AND status = 'done' AND started_at IS NOT NULL AND completed_at IS NOT NULL`
+  ).get(project_id);
+  const estimatedDuration = avg?.avg_sec ? Math.round(avg.avg_sec) : null;
+
+  db.prepare(`
+    INSERT INTO agent_queue (id, item_id, item_text, project_id, sprint_id, priority, sort_order, estimated_duration_sec, scheduled_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, item_id ?? null, item_text ?? null, project_id, sprint_id ?? null, priority, maxOrder.next, estimatedDuration, Date.now());
+
+  const row = db.prepare("SELECT * FROM agent_queue WHERE id = ?").get(id);
+  res.status(201).json(row);
+});
+
+app.delete("/api/queue/:id", (req, res) => {
+  const { id } = req.params;
+  const row = db.prepare("SELECT id, status FROM agent_queue WHERE id = ?").get(id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  if (row.status === "running") {
+    db.prepare("UPDATE agent_queue SET status = 'cancelled', completed_at = ? WHERE id = ?")
+      .run(Date.now(), id);
+  } else {
+    db.prepare("DELETE FROM agent_queue WHERE id = ?").run(id);
+  }
+  res.json({ ok: true });
+});
+
+app.patch("/api/queue/reorder", (req, res) => {
+  const { ids } = req.body ?? {};
+  if (!Array.isArray(ids)) {
+    return res.status(400).json({ error: "ids array required" });
+  }
+  const update = db.prepare("UPDATE agent_queue SET sort_order = ? WHERE id = ?");
+  db.transaction(() => {
+    for (let i = 0; i < ids.length; i++) {
+      update.run(i, ids[i]);
+    }
+  })();
+  res.json({ ok: true });
+});
+
+app.post("/api/queue/sprint/:sprintId/launch", (req, res) => {
+  const { sprintId } = req.params;
+  const { project_id } = req.body ?? {};
+  if (!project_id) {
+    return res.status(400).json({ error: "project_id is required" });
+  }
+  const name = project_id;
+  const filePath = path.join(PROJECTS_DIR, name, "backlog.md");
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: "backlog not found" });
+  }
+  const raw = fs.readFileSync(filePath, "utf-8");
+  const sections = parseBacklogSections(raw);
+  const sprints = readSprints(name);
+  const sprint = sprints.find((s) => s.id === sprintId);
+  if (!sprint) {
+    return res.status(404).json({ error: "sprint not found" });
+  }
+  // Find sprint-specific section or fall back to all unchecked items
+  const sprintSection = sections.find((s) =>
+    s.header && sprint.name && s.header.toLowerCase().includes(sprint.name.toLowerCase())
+  );
+  const items = sprintSection ? sprintSection.items.filter((i) => !i.checked) : [];
+  const todoItems = items.length > 0 ? items : sections.flatMap((s) => s.items.filter((i) => !i.checked));
+
+  const maxOrder = db.prepare(
+    "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM agent_queue WHERE status = 'queued'"
+  ).get();
+  const avg = db.prepare(
+    `SELECT AVG(completed_at - started_at) / 1000 AS avg_sec
+     FROM jobs
+     WHERE project = ? AND status = 'done' AND started_at IS NOT NULL AND completed_at IS NOT NULL`
+  ).get(project_id);
+  const estimatedDuration = avg?.avg_sec ? Math.round(avg.avg_sec) : null;
+
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO agent_queue (id, item_id, item_text, project_id, sprint_id, priority, sort_order, estimated_duration_sec, scheduled_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const added = [];
+  db.transaction(() => {
+    for (let i = 0; i < todoItems.length; i++) {
+      const item = todoItems[i];
+      const existing = db.prepare(
+        "SELECT id FROM agent_queue WHERE project_id = ? AND item_text = ? AND status IN ('queued', 'running')"
+      ).get(project_id, item.text);
+      if (existing) continue;
+      const id = randomUUID();
+      const prio = item.priority === 'P1' ? 1 : item.priority === 'P3' ? 3 : 2;
+      insert.run(id, `${item.index}`, item.text, project_id, sprintId, prio, maxOrder.next + i, estimatedDuration, Date.now());
+      added.push(id);
+    }
+  })();
+  res.json({ ok: true, added: added.length, ids: added });
+});
+
+app.post("/api/queue/sprint/:sprintId/pause", (req, res) => {
+  const { sprintId } = req.params;
+  const removed = db.prepare(
+    "DELETE FROM agent_queue WHERE sprint_id = ? AND status = 'queued'"
+  ).run(sprintId);
+  res.json({ ok: true, removed: removed.changes });
+});
+
 // ── Provider API Keys Settings ─────────────────────────────────────────────────
 // GET  /api/settings/providers  → { replicate, openai, openrouter } (keys masked)
 // POST /api/settings/providers  → { provider, api_key } saves/updates a key
@@ -2209,7 +2353,7 @@ app.get("/api/generate/video/:jobId/progress", (req, res) => {
 syncFromFilesystem();
 
 // Periodic filesystem sync every 30 seconds — also broadcasts to job SSE clients.
-// Also cleans up any stale current_job_id entries for completed jobs.
+// Also cleans up any stale current_job_id entries for completed jobs and queue items.
 cron.schedule("*/30 * * * * *", () => {
   try {
     syncFromFilesystem();
@@ -2226,12 +2370,25 @@ cron.schedule("*/30 * * * * *", () => {
         ).run(finalStatus, rj.id);
       }
     }
+    // Resolve queue items whose agent job has finished
+    const runningQueue = db
+      .prepare("SELECT id, agent_job_id FROM agent_queue WHERE status = 'running' AND agent_job_id IS NOT NULL")
+      .all();
+    for (const qi of runningQueue) {
+      const job = db.prepare("SELECT status FROM jobs WHERE id = ?").get(qi.agent_job_id);
+      if (job && job.status !== "running") {
+        const finalStatus = job.status === "done" ? "done" : "failed";
+        db.prepare(
+          "UPDATE agent_queue SET status = ?, completed_at = ? WHERE id = ?"
+        ).run(finalStatus, Date.now(), qi.id);
+      }
+    }
   } catch (err) {
     console.error("[sync error]", err.message);
   }
 });
 
-// Minute-by-minute scheduler — fires recurring jobs when their next_run_at is reached
+// Minute-by-minute scheduler — fires recurring jobs and consumes the agent queue
 cron.schedule("* * * * *", async () => {
   try {
     const results = await runDueJobs({
@@ -2245,6 +2402,20 @@ cron.schedule("* * * * *", async () => {
     }
   } catch (err) {
     console.error("[scheduler] tick error:", err.message);
+  }
+  // Consume agent queue — launch next queued item if nothing is running
+  try {
+    const result = await consumeQueue({
+      db,
+      fetchFn: fetch,
+      sonaApiUrl: SONA_API,
+      projectsDir: PROJECTS_DIR,
+    });
+    if (result) {
+      console.log(`[queue] ${result.status}: queue item ${result.queueId}`, result);
+    }
+  } catch (err) {
+    console.error("[queue] consume error:", err.message);
   }
 });
 
