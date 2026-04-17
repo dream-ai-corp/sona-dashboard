@@ -768,10 +768,9 @@ export default function ProjectDetailPage() {
     try {
       const res = await fetch(`/api/audits?project=${encodeURIComponent(id)}`);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const raw = await res.json() as any[];
-      if (Array.isArray(raw)) {
-        setAuditReports(raw.map((r) => ({ ...r, sprintTitle: r.sprint_title })));
-      }
+      const data = await res.json() as any;
+      const rows: any[] = Array.isArray(data) ? data : data.audits ?? [];
+      setAuditReports(rows.map((r: any) => ({ ...r, sprintTitle: r.sprint ?? r.sprint_title ?? '' })));
     } catch {
       setAuditReports([]);
     }
@@ -805,7 +804,9 @@ export default function ProjectDetailPage() {
         const res = await fetch(`/api/audits?project=${encodeURIComponent(id)}`);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const raw = await res.json() as any[];
-        if (Array.isArray(raw)) setAuditReports(raw.map((r) => ({ ...r, sprintTitle: r.sprint_title })));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const rows: any[] = Array.isArray(raw) ? raw : (raw as any).audits ?? [];
+        setAuditReports(rows.map((r: any) => ({ ...r, sprintTitle: r.sprint ?? r.sprint_title ?? '' })));
       } catch {}
     };
     const interval = setInterval(() => { silentRefreshBacklog(); silentRefreshJobs(); silentRefreshAudits(); }, 5000);

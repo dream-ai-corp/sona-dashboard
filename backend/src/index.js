@@ -1931,6 +1931,12 @@ app.post("/api/audits", (req, res) => {
   res.status(201).json({ audit: row });
 });
 
+app.get("/api/audits/:id", (req, res) => {
+  const row = db.prepare("SELECT * FROM audit_reports WHERE id = ?").get(req.params.id);
+  if (!row) return res.status(404).json({ error: "audit not found" });
+  res.json(row);
+});
+
 app.delete("/api/audits/:id", (req, res) => {
   const { id } = req.params;
   const existing = db.prepare("SELECT id FROM audit_reports WHERE id = ?").get(id);
