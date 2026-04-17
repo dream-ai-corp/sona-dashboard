@@ -20,9 +20,22 @@ type GenerateRequest = {
 
 type GenerateResult = { url: string } | { error: string };
 
+/* ─── Model alias → Replicate full path ─────────────────────────── */
+const MODEL_ALIASES: Record<string, string> = {
+  'flux-schnell':   'black-forest-labs/FLUX.1-schnell',
+  'flux-dev':       'black-forest-labs/FLUX.1-dev',
+  'sdxl':           'stability-ai/sdxl',
+  'sdxl-lightning': 'bytedance/sdxl-lightning-4step',
+};
+
+function resolveModel(model: string): string {
+  return MODEL_ALIASES[model] ?? model;
+}
+
 /* ─── Provider dispatch ─────────────────────────────────────────── */
 async function generate(req: GenerateRequest): Promise<GenerateResult> {
-  const { prompt, model, width = 1024, height = 1024 } = req;
+  const { prompt, width = 1024, height = 1024 } = req;
+  const model = resolveModel(req.model);
 
   // DALL·E 3 via OpenAI
   if (model.startsWith('openai/') && OPENAI_KEY) {
