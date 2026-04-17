@@ -55,15 +55,32 @@ type GenerateResult = { url: string } | { error: string };
 type ModelConfig = { id: string; provider: 'replicate' | 'openai' | 'openrouter' | 'together' | 'fal'; label: string };
 
 const MODELS: Record<string, ModelConfig> = {
-  // Replicate models (free/cheap)
-  'flux-schnell':   { id: 'black-forest-labs/FLUX.1-schnell', provider: 'replicate', label: 'FLUX.1 Schnell (gratuit)' },
-  'sdxl':           { id: 'stability-ai/sdxl', provider: 'replicate', label: 'Stable Diffusion XL (gratuit)' },
-  'sdxl-lightning': { id: 'bytedance/sdxl-lightning-4step', provider: 'replicate', label: 'SDXL Lightning (gratuit)' },
+  // Replicate — free
+  'flux-schnell':       { id: 'black-forest-labs/flux-schnell', provider: 'replicate', label: 'FLUX.1 Schnell' },
+  'sdxl':               { id: 'stability-ai/sdxl', provider: 'replicate', label: 'Stable Diffusion XL' },
+  'sdxl-lightning':     { id: 'bytedance/sdxl-lightning-4step', provider: 'replicate', label: 'SDXL Lightning (ByteDance)' },
+  'playground-v2.5':    { id: 'playgroundai/playground-v2.5-1024px-aesthetic', provider: 'replicate', label: 'Playground v2.5' },
+  'kolors':             { id: 'kwai-kolors/kolors', provider: 'replicate', label: 'Kolors (Kwai)' },
+  'kandinsky-3':        { id: 'ai-forever/kandinsky-3', provider: 'replicate', label: 'Kandinsky 3' },
+  'proteus-v0.4':       { id: 'dataautogpt3/proteus-v0.4', provider: 'replicate', label: 'Proteus v0.4' },
+  // Replicate — paid
+  'flux-dev':           { id: 'black-forest-labs/flux-dev', provider: 'replicate', label: 'FLUX.1 Dev' },
+  'flux-1.1-pro':       { id: 'black-forest-labs/flux-1.1-pro', provider: 'replicate', label: 'FLUX 1.1 Pro' },
+  'flux-1.1-pro-ultra': { id: 'black-forest-labs/flux-1.1-pro-ultra', provider: 'replicate', label: 'FLUX 1.1 Pro Ultra' },
+  'ideogram-v2':        { id: 'ideogram-ai/ideogram-v2', provider: 'replicate', label: 'Ideogram v2' },
+  'recraft-v3':         { id: 'recraft-ai/recraft-v3', provider: 'replicate', label: 'Recraft v3' },
   // OpenAI direct
-  'dall-e-3':       { id: 'dall-e-3', provider: 'openai', label: 'DALL\u00B7E 3 (payant)' },
-  // OpenRouter image models
-  'gpt-image':      { id: 'openai/gpt-5-image-mini', provider: 'openrouter', label: 'GPT Image Mini (payant)' },
-  'gemini-image':   { id: 'google/gemini-2.5-flash-image', provider: 'openrouter', label: 'Gemini Flash Image (payant)' },
+  'dall-e-3':           { id: 'dall-e-3', provider: 'openai', label: 'DALL-E 3' },
+  // OpenRouter
+  'gpt-5-image-mini':   { id: 'openai/gpt-5-image-mini', provider: 'openrouter', label: 'GPT-5 Image Mini' },
+  'gpt-5-image':        { id: 'openai/gpt-5-image', provider: 'openrouter', label: 'GPT-5 Image' },
+  'gemini-flash-image': { id: 'google/gemini-2.5-flash-image', provider: 'openrouter', label: 'Gemini Flash Image' },
+  // Pollinations.ai — free, no API key needed
+  'pollinations-flux':          { id: 'flux', provider: 'pollinations' as any, label: 'FLUX (Pollinations)' },
+  'pollinations-turbo':         { id: 'turbo', provider: 'pollinations' as any, label: 'Turbo (Pollinations)' },
+  'pollinations-flux-realism':  { id: 'flux-realism', provider: 'pollinations' as any, label: 'FLUX Realism (Pollinations)' },
+  'pollinations-flux-anime':    { id: 'flux-anime', provider: 'pollinations' as any, label: 'FLUX Anime (Pollinations)' },
+  'pollinations-flux-3d':       { id: 'flux-3d', provider: 'pollinations' as any, label: 'FLUX 3D (Pollinations)' },
 };
 
 function resolveModel(model: string): ModelConfig {
@@ -179,6 +196,11 @@ async function generate(req: GenerateRequest): Promise<GenerateResult> {
   if (cfg.provider === 'fal' && keys.fal) {
     return generateFal(prompt, cfg.id, width, height, keys.fal);
   }
+  // Pollinations.ai — always available, no key needed
+  if ((cfg.provider as string) === 'pollinations') {
+    return generatePollinations(prompt, width, height, cfg.id);
+  }
+
   if (cfg.provider === 'openai' && keys.openai) {
     return generateOpenAI(prompt, width, height, keys.openai);
   }
@@ -196,10 +218,8 @@ async function generate(req: GenerateRequest): Promise<GenerateResult> {
   if (keys.openrouter) return generateOpenRouter(prompt, cfg.id, width, height, keys.openrouter);
   if (keys.openai) return generateOpenAI(prompt, width, height, keys.openai);
 
-  return {
-    error:
-      'Aucun provider configuré. Ajoutez vos clés API dans Paramètres → Connexions.',
-  };
+  // Ultimate fallback: Pollinations.ai (free, no API key needed)
+  return generatePollinations(prompt, width, height, 'flux');
 }
 
 /* ─── OpenAI (DALL·E 3) ─────────────────────────────────────────── */
@@ -363,6 +383,31 @@ async function generateReplicate(
   }
 
   return { error: 'Replicate: timeout — generation took too long' };
+}
+
+/* ─── Pollinations.ai (100% free, no API key needed) ──────────── */
+async function generatePollinations(
+  prompt: string,
+  width: number,
+  height: number,
+  model: string = 'flux',
+): Promise<GenerateResult> {
+  const encoded = encodeURIComponent(prompt);
+  const url = `https://image.pollinations.ai/prompt/${encoded}?width=${width}&height=${height}&model=${model}&nologo=true`;
+  
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(120_000),
+    redirect: 'follow',
+  });
+
+  if (!res.ok) {
+    return { error: `Pollinations error ${res.status}` };
+  }
+
+  const buffer = await res.arrayBuffer();
+  const base64 = Buffer.from(buffer).toString('base64');
+  const contentType = res.headers.get('content-type') ?? 'image/jpeg';
+  return { url: `data:${contentType};base64,${base64}` };
 }
 
 /* ─── Route handler ─────────────────────────────────────────────── */

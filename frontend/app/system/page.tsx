@@ -62,6 +62,7 @@ function BrainButton({ mode, label, hint, active, disabled, onClick }: { mode: s
 
 export default function SystemPage() {
   const [daemon, setDaemon] = useState<DaemonData | null>(null);
+  const [daemonBusy, setDaemonBusy] = useState(false);
   const [services, setServices] = useState<Record<string, ServiceStatus>>({});
   const [brain, setBrain] = useState<BrainState | null>(null);
   const [voice, setVoice] = useState<VoiceState | null>(null);
@@ -172,6 +173,43 @@ export default function SystemPage() {
                 <span style={{ fontSize: '11px', fontWeight: 700, padding: '3px 10px', borderRadius: '20px', background: daemonOn ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)', color: daemonOn ? '#4ade80' : '#f87171', border: `1px solid ${daemonOn ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}` }}>
                   {daemonOn ? 'RUNNING' : 'STOPPED'}
                 </span>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    onClick={async () => {
+                      setDaemonBusy(true);
+                      try {
+                        await fetch((process.env.NEXT_PUBLIC_SONA_API_URL || '') + '/api/jobs/' + (daemonOn ? 'pauseall' : 'resumeall'), { method: 'POST' });
+                      } catch {} finally { setDaemonBusy(false); }
+                    }}
+                    disabled={daemonBusy}
+                    style={{
+                      fontSize: '11px', fontWeight: 600, padding: '4px 12px', borderRadius: '8px',
+                      background: daemonOn ? 'rgba(251,191,36,0.1)' : 'rgba(34,197,94,0.1)',
+                      color: daemonOn ? '#fbbf24' : '#4ade80',
+                      border: '1px solid ' + (daemonOn ? 'rgba(251,191,36,0.25)' : 'rgba(34,197,94,0.25)'),
+                      cursor: daemonBusy ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+                    }}
+                  >
+                    {daemonOn ? '\u23F8 Pause All' : '\u25B6 Resume All'}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      setDaemonBusy(true);
+                      try {
+                        await fetch((process.env.NEXT_PUBLIC_SONA_API_URL || '') + '/api/jobs/killall', { method: 'POST' });
+                      } catch {} finally { setDaemonBusy(false); }
+                    }}
+                    disabled={daemonBusy}
+                    style={{
+                      fontSize: '11px', fontWeight: 600, padding: '4px 12px', borderRadius: '8px',
+                      background: 'rgba(239,68,68,0.1)', color: '#f87171',
+                      border: '1px solid rgba(239,68,68,0.25)',
+                      cursor: daemonBusy ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+                    }}
+                  >
+                    Kill All
+                  </button>
+                </div>
               </div>
               <div style={{ fontSize: '12px', color: '#64748b', lineHeight: 2 }}>
                 <div>Last tick: <span style={{ color: '#94a3b8', fontFamily: 'monospace' }}>{lastTick}</span></div>

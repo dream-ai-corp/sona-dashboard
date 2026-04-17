@@ -17,9 +17,15 @@ import {
   Music,
   ArrowRight,
   Info,
+  KeyRound,
+  Eye,
+  EyeOff,
+  CheckCircle,
+  XCircle,
 } from 'lucide-react';
 
 const SONA_API = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
+
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:3011';
 
 type Tab = 'general' | 'connections' | 'media';
@@ -602,7 +608,7 @@ function ProviderRow({ label, provider, placeholder, initialValue, onSaved }: Pr
   const handleSave = async () => {
     setSaving(true);
     try {
-      await fetch(`${BACKEND_URL}/api/settings/providers`, {
+      await fetch('/api/settings/providers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider, api_key: value }),
@@ -617,7 +623,7 @@ function ProviderRow({ label, provider, placeholder, initialValue, onSaved }: Pr
     setTestState('testing');
     setTestMsg('');
     try {
-      const res = await fetch(`${BACKEND_URL}/api/settings/providers/${provider}/test`, {
+      const res = await fetch(`/api/settings/providers/${provider}/test`, {
         method: 'POST',
       });
       const data = await res.json() as { ok: boolean; error?: string };
@@ -745,7 +751,7 @@ function ProviderApiKeysSection() {
 
   const fetchKeys = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/settings/providers`);
+      const res = await fetch('/api/settings/providers');
       if (res.ok) {
         const data = await res.json() as Record<string, string>;
         setKeys(data);
@@ -772,7 +778,7 @@ function ProviderApiKeysSection() {
       style={{ borderRadius: '16px', padding: '24px' }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px' }}>
-        <Key size={15} color="#f59e0b" />
+        <KeyRound size={15} color="#f59e0b" />
         <h2 style={{ fontSize: '14px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>
           Provider API Keys
         </h2>

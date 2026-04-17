@@ -11,6 +11,7 @@ import {
   Brain,
   Settings,
   FileText,
+  Lightbulb,
   Zap,
   FolderOpen,
   FolderKanban,
@@ -35,6 +36,7 @@ const navItems = [
   { icon: FolderKanban,    label: 'Projects',       route: '/projects' },
   { icon: Repeat2,         label: 'Recurring Jobs', route: '/recurring-jobs' },
   { icon: FileText,        label: 'Notes',          route: '/notes' },
+  { icon: Lightbulb,       label: 'Brainstorm',     route: '/brainstorm' },
   { icon: Settings,        label: 'Settings',       route: '/settings' },
 ];
 
