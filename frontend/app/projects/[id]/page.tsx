@@ -22,6 +22,7 @@ import {
   Clock,
   AlertCircle,
   CheckCircle2,
+  CircleCheck,
   RotateCcw,
   Mic,
 } from 'lucide-react';
@@ -49,6 +50,8 @@ interface BacklogItem {
   text: string;
   checked: boolean;
   priority: 'P1' | 'P2' | 'P3' | null;
+  acceptanceCriteria?: string[];
+  branch?: string | null;
 }
 
 interface BacklogSection {
@@ -202,96 +205,133 @@ function BacklogItemRow({
     onPriorityChange(item, next);
   };
 
+  const hasAC = (item.acceptanceCriteria?.length ?? 0) > 0;
+  const hasBranch = !!item.branch;
+
   return (
     <div
       style={{
-        display: 'flex', alignItems: 'center', gap: '10px',
         padding: '10px 12px', borderRadius: '10px',
         background: item.checked ? 'rgba(255,255,255,0.01)' : 'rgba(255,255,255,0.025)',
         border: `1px solid ${item.checked ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.07)'}`,
         marginBottom: '6px', transition: 'all 150ms ease',
       }}
     >
-      <button
-        onClick={() => onToggle(item)}
-        disabled={saving}
-        style={{
-          width: '18px', height: '18px', borderRadius: '5px', flexShrink: 0,
-          border: `2px solid ${item.checked ? '#4ade80' : 'rgba(255,255,255,0.2)'}`,
-          background: item.checked ? 'rgba(34,197,94,0.2)' : 'transparent',
-          cursor: saving ? 'not-allowed' : 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          transition: 'all 150ms ease', padding: 0,
-        }}
-      >
-        {item.checked && <Check size={10} color="#4ade80" strokeWidth={3} />}
-      </button>
+      {/* Main item row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <button
+          onClick={() => onToggle(item)}
+          disabled={saving}
+          style={{
+            width: '18px', height: '18px', borderRadius: '5px', flexShrink: 0,
+            border: `2px solid ${item.checked ? '#4ade80' : 'rgba(255,255,255,0.2)'}`,
+            background: item.checked ? 'rgba(34,197,94,0.2)' : 'transparent',
+            cursor: saving ? 'not-allowed' : 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 150ms ease', padding: 0,
+          }}
+        >
+          {item.checked && <Check size={10} color="#4ade80" strokeWidth={3} />}
+        </button>
 
-      {/* Priority badge — click to cycle P1→P2→P3→none */}
-      <button
-        onClick={cyclePriority}
-        disabled={saving}
-        title="Click to change priority"
-        style={{
-          flexShrink: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '0.06em',
-          padding: '2px 6px', borderRadius: '5px', cursor: saving ? 'not-allowed' : 'pointer',
-          color: item.checked ? '#334155' : pc.color,
-          background: item.checked ? 'rgba(255,255,255,0.03)' : pc.bg,
-          border: `1px solid ${item.checked ? 'rgba(255,255,255,0.06)' : pc.border}`,
-          transition: 'all 150ms ease', minWidth: '30px', textAlign: 'center',
-        }}
-      >
-        {item.priority ?? '—'}
-      </button>
+        {/* Priority badge — click to cycle P1→P2→P3→none */}
+        <button
+          onClick={cyclePriority}
+          disabled={saving}
+          title="Click to change priority"
+          style={{
+            flexShrink: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '0.06em',
+            padding: '2px 6px', borderRadius: '5px', cursor: saving ? 'not-allowed' : 'pointer',
+            color: item.checked ? '#334155' : pc.color,
+            background: item.checked ? 'rgba(255,255,255,0.03)' : pc.bg,
+            border: `1px solid ${item.checked ? 'rgba(255,255,255,0.06)' : pc.border}`,
+            transition: 'all 150ms ease', minWidth: '30px', textAlign: 'center',
+          }}
+        >
+          {item.priority ?? '—'}
+        </button>
 
-      {editing ? (
-        <div style={{ flex: 1, display: 'flex', gap: '6px', alignItems: 'center' }}>
-          <input
-            ref={inputRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commitEdit();
-              if (e.key === 'Escape') cancelEdit();
-            }}
-            style={{
-              flex: 1, fontSize: '13px', padding: '3px 8px',
-              background: 'rgba(255,255,255,0.06)',
-              border: '1px solid rgba(124,58,237,0.4)',
-              borderRadius: '6px', color: '#e2e8f0',
-              outline: 'none', fontFamily: 'inherit',
-            }}
-          />
-          <button onClick={commitEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4ade80', padding: '2px' }}>
-            <Check size={14} />
-          </button>
-          <button onClick={cancelEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f87171', padding: '2px' }}>
-            <X size={14} />
-          </button>
+        {editing ? (
+          <div style={{ flex: 1, display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <input
+              ref={inputRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitEdit();
+                if (e.key === 'Escape') cancelEdit();
+              }}
+              style={{
+                flex: 1, fontSize: '13px', padding: '3px 8px',
+                background: 'rgba(255,255,255,0.06)',
+                border: '1px solid rgba(124,58,237,0.4)',
+                borderRadius: '6px', color: '#e2e8f0',
+                outline: 'none', fontFamily: 'inherit',
+              }}
+            />
+            <button onClick={commitEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4ade80', padding: '2px' }}>
+              <Check size={14} />
+            </button>
+            <button onClick={cancelEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f87171', padding: '2px' }}>
+              <X size={14} />
+            </button>
+          </div>
+        ) : (
+          <>
+            <span
+              style={{
+                flex: 1, fontSize: '13px', lineHeight: 1.5,
+                color: item.checked ? '#475569' : '#cbd5e1',
+                textDecoration: item.checked ? 'line-through' : 'none',
+              }}
+            >
+              {item.text}
+            </span>
+            <button
+              onClick={() => { setDraft(item.text); setEditing(true); }}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: '#334155', padding: '2px', opacity: 0,
+                transition: 'opacity 150ms',
+              }}
+              className="edit-btn"
+            >
+              <Pencil size={12} />
+            </button>
+          </>
+        )}
+      </div>
+
+      {/* Acceptance Criteria & Branch (shown only when not editing) */}
+      {!editing && (hasAC || hasBranch) && (
+        <div style={{ paddingLeft: '16px', marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+          {item.acceptanceCriteria?.map((ac, i) => (
+            <div
+              key={i}
+              data-testid="ac-item"
+              style={{ display: 'flex', alignItems: 'flex-start', gap: '5px' }}
+            >
+              <CircleCheck size={11} color="#64748b" style={{ flexShrink: 0, marginTop: '2px' }} />
+              <span style={{ fontSize: '11px', color: '#64748b', lineHeight: 1.5 }}>{ac}</span>
+            </div>
+          ))}
+          {item.branch && (
+            <div style={{ marginTop: hasBranch && hasAC ? '2px' : 0 }}>
+              <code
+                data-testid="branch-chip"
+                style={{
+                  fontSize: '10px', color: '#475569',
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: '4px', padding: '1px 6px',
+                  fontFamily: 'monospace',
+                }}
+              >
+                {item.branch}
+              </code>
+            </div>
+          )}
         </div>
-      ) : (
-        <>
-          <span
-            style={{
-              flex: 1, fontSize: '13px', lineHeight: 1.5,
-              color: item.checked ? '#475569' : '#cbd5e1',
-              textDecoration: item.checked ? 'line-through' : 'none',
-            }}
-          >
-            {item.text}
-          </span>
-          <button
-            onClick={() => { setDraft(item.text); setEditing(true); }}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: '#334155', padding: '2px', opacity: 0,
-              transition: 'opacity 150ms',
-            }}
-            className="edit-btn"
-          >
-            <Pencil size={12} />
-          </button>
-        </>
       )}
     </div>
   );

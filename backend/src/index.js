@@ -485,6 +485,26 @@ app.get("/api/status/stream", async (req, res) => {
 });
 
 // ── Backlog helpers (ported from frontend lib/backlog.ts) ─────────────────────
+function extractSubLines(lines, itemLineIndex) {
+  const acceptanceCriteria = [];
+  let branch = null;
+  for (let j = itemLineIndex + 1; j < lines.length; j++) {
+    const sub = lines[j];
+    if (/^\s{2,}- /.test(sub)) {
+      const subText = sub.replace(/^\s+- /, '').trim();
+      if (/^Branche\s*:/i.test(subText)) {
+        const branchMatch = subText.match(/`([^`]+)`/);
+        branch = branchMatch ? branchMatch[1] : subText.replace(/^Branche\s*:\s*/i, '').trim();
+      } else if (/^AC\d*/i.test(subText)) {
+        acceptanceCriteria.push(subText);
+      }
+    } else if (sub.trim() === '' || /^[-#]/.test(sub)) {
+      break;
+    }
+  }
+  return { acceptanceCriteria, branch };
+}
+
 function parseBacklog(content) {
   const items = [];
   const lines = content.split('\n');
@@ -498,7 +518,8 @@ function parseBacklog(content) {
     const priorityMatch = text.match(/^\[(P[123])\]\s*/);
     const priority = priorityMatch ? priorityMatch[1] : null;
     if (priorityMatch) text = text.slice(priorityMatch[0].length);
-    items.push({ index: idx++, lineIndex: i, text, checked, priority });
+    const { acceptanceCriteria, branch } = extractSubLines(lines, i);
+    items.push({ index: idx++, lineIndex: i, text, checked, priority, acceptanceCriteria, branch });
   }
   return items;
 }
@@ -523,7 +544,8 @@ function parseBacklogSections(content) {
     const priorityMatch = text.match(/^\[(P[123])\]\s*/);
     const priority = priorityMatch ? priorityMatch[1] : null;
     if (priorityMatch) text = text.slice(priorityMatch[0].length);
-    current.items.push({ index: itemIdx++, lineIndex: i, text, checked, priority });
+    const { acceptanceCriteria, branch } = extractSubLines(lines, i);
+    current.items.push({ index: itemIdx++, lineIndex: i, text, checked, priority, acceptanceCriteria, branch });
   }
   if (current.header !== null || current.items.length > 0) sections.push(current);
   return sections;
