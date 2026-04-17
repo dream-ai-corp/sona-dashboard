@@ -8,7 +8,7 @@ services:
       - ./frontend:/app
       - /home/beniben/sona-workspace:/home/beniben/sona-workspace
     environment:
-      - NEXT_PUBLIC_API_URL=
+      - NEXT_PUBLIC_API_URL=http://72.60.185.57:3011
       - SONA_API_URL=http://host.docker.internal:8080
       - BACKEND_URL=http://backend:3011
       - SONA_HOST_TOKEN=c7379b01c46c5ca58eb6c0851b8e25e84e84410b82e857532179953c33be51b9
@@ -20,6 +20,8 @@ services:
 
   backend:
     command: npm run dev
+    mem_limit: 512m
+    memswap_limit: 768m
     volumes:
       - ./backend:/app
     environment:

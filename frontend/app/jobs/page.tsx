@@ -43,6 +43,8 @@ function statusConfig(status?: string) {
     return { label: 'Done', color: '#4ade80', bg: 'rgba(34,197,94,0.1)', border: 'rgba(34,197,94,0.3)', icon: <CheckCircle2 size={11} /> };
   if (s === 'error' || s === 'failed')
     return { label: 'Failed', color: '#f87171', bg: 'rgba(239,68,68,0.1)', border: 'rgba(239,68,68,0.3)', icon: <XCircle size={11} /> };
+  if (s === 'paused')
+    return { label: 'Paused', color: '#fbbf24', bg: 'rgba(251,191,36,0.1)', border: 'rgba(251,191,36,0.3)', icon: <Circle size={11} /> };
   return { label: status ?? 'Pending', color: '#fbbf24', bg: 'rgba(251,191,36,0.1)', border: 'rgba(251,191,36,0.3)', icon: <Circle size={11} /> };
 }
 
@@ -62,20 +64,84 @@ function JobRow({ job }: { job: Job }) {
         marginBottom: '8px',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '6px' }}>
-        <p style={{ fontSize: '13px', color: '#cbd5e1', lineHeight: 1.4, flex: 1, margin: 0,
-          overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-          {job.goal ?? '(no goal)'}
-        </p>
-        <span style={{
-          display: 'inline-flex', alignItems: 'center', gap: '4px',
-          padding: '3px 8px', borderRadius: '20px', fontSize: '11px', fontWeight: 600,
-          background: s.bg, color: s.color, border: `1px solid ${s.border}`,
-          whiteSpace: 'nowrap', flexShrink: 0,
-        }}>
-          {s.icon} {s.label}
-        </span>
-      </div>
+      {(() => {
+        const g = job.goal ?? '';
+        // Parse goal into structured fields
+        let projectName = job.project ?? '';
+        let sprintNum = '';
+        let sprintLabel = '';
+        let itemId = '';
+        let priority = '';
+        let desc = g.slice(0, 500);
+        const isAudit = g.startsWith('AUDIT ');
+        
+        if (isAudit) {
+          // Format: "AUDIT <project> Sprint N — <label> (priorité ...)"
+          const auditMatch = g.match(/^AUDIT\s+(\S+)\s+(Sprint\s*\d+)(?:\s*[—-]\s*([^(]+))?/);
+          if (auditMatch) {
+            projectName = auditMatch[1];
+            sprintNum = auditMatch[2];
+            sprintLabel = (auditMatch[3] ?? '').replace(/\s*\(priorit.*/i, '').replace(/\s*\($/,'').trim();
+          }
+          desc = 'Sprint audit';
+        } else {
+          // Format: "Work on this task from the <project> backlog (<Sprint N — label>):\n\nTASK: [P1] **S1-03** desc"
+          const pm = g.match(/from the (.+?) backlog/);
+          if (pm) projectName = pm[1];
+          const sm = g.match(/\((Sprint\s*\d+)(?:\s*[—:\-]+\s*(.+?))\)(?::|\n)/);
+          if (sm) { sprintNum = sm[1]; sprintLabel = (sm[2] ?? '').trim(); }
+          const tm = g.match(/TASK:\s*(.+)/);
+          if (tm) {
+            const taskLine = tm[1];
+            const im = taskLine.match(/\*\*([A-Z]\d+-\d+)\*\*/);
+            if (im) itemId = im[1];
+            const prm = taskLine.match(/\[(P[123])\]/);
+            if (prm) priority = prm[1];
+            desc = taskLine.replace(/\[P[123]\]\s*/, '').replace(/\*\*[A-Z]\d+-\d+\*\*\s*/, '').replace(/<!--.*?-->/g, '').trim().slice(0, 500);
+          }
+        }
+        const prioColors: Record<string, string> = { P1: '#f87171', P2: '#fbbf24', P3: '#94a3b8' };
+        return (<>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '12px', marginBottom: '4px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap', flex: 1 }}>
+              {projectName && (
+                <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '6px', background: 'rgba(124,58,237,0.12)', color: '#a78bfa', border: '1px solid rgba(124,58,237,0.2)', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+                  {projectName}
+                </span>
+              )}
+              {sprintNum && (
+                <span style={{ fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '6px', background: 'rgba(6,182,212,0.1)', color: '#67e8f9', border: '1px solid rgba(6,182,212,0.2)' }}>
+                  {sprintNum}
+                </span>
+              )}
+              {sprintLabel && (
+                <span style={{ fontSize: '10px', fontWeight: 600, padding: '2px 7px', borderRadius: '6px', background: 'rgba(255,255,255,0.04)', color: '#94a3b8', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  {sprintLabel}
+                </span>
+              )}
+              {itemId && (
+                <span style={{ fontSize: '11px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'monospace' }}>{itemId}</span>
+              )}
+              {priority && (
+                <span style={{ fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '10px', background: (prioColors[priority] ?? '#64748b') + '18', color: prioColors[priority] ?? '#64748b', border: '1px solid ' + (prioColors[priority] ?? '#64748b') + '40' }}>
+                  {priority}
+                </span>
+              )}
+            </div>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: '4px',
+              padding: '3px 8px', borderRadius: '20px', fontSize: '11px', fontWeight: 600,
+              background: s.bg, color: s.color, border: `1px solid ${s.border}`,
+              whiteSpace: 'nowrap', flexShrink: 0,
+            }}>
+              {s.icon} {s.label}
+            </span>
+          </div>
+          <p style={{ fontSize: '12px', color: '#94a3b8', margin: '0 0 6px', lineHeight: 1.5 }}>
+            {desc}
+          </p>
+        </>);
+      })()}
       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
         <code style={{ fontSize: '10px', color: '#475569', fontFamily: 'monospace' }}>#{job.id?.slice(0, 8)}</code>
         {isRunning && job.startedAt && (
@@ -94,6 +160,8 @@ function JobRow({ job }: { job: Job }) {
 export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
+  const [pausingAll, setPausingAll] = useState(false);
+  const [allPaused, setAllPaused] = useState(false);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
 
@@ -150,7 +218,36 @@ export default function JobsPage() {
 
   const running = jobs.filter(j => j.status === 'running' || j.status === 'in_progress');
 
-  return (
+  const handlePauseAll = async () => {
+    setPausingAll(true);
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
+      await fetch(apiUrl + '/api/jobs/pauseall', { method: 'POST' });
+      setAllPaused(true);
+    } catch {} finally { setPausingAll(false); }
+    setTimeout(fetchJobs, 500);
+  };
+  const handleResumeAll = async () => {
+    setPausingAll(true);
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
+      await fetch(apiUrl + '/api/jobs/resumeall', { method: 'POST' });
+      setAllPaused(false);
+    } catch {} finally { setPausingAll(false); }
+    setTimeout(fetchJobs, 500);
+  };
+  const handleKillAll = async () => {
+    setPausingAll(true);
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
+      await fetch(apiUrl + '/api/jobs/killall', { method: 'POST' });
+    } catch {} finally { setPausingAll(false); }
+    setTimeout(fetchJobs, 500);
+  };
+
+
+
+    return (
     <PageShell>
       {/* Top bar */}
       <div className="sona-page-topbar" style={{
@@ -165,21 +262,57 @@ export default function JobsPage() {
             {jobs.length} total · {running.length} running
           </p>
         </div>
-        <button
-          onClick={fetchJobs}
-          disabled={loading}
-          style={{
-            display: 'flex', alignItems: 'center', gap: '6px',
-            padding: '7px 14px', borderRadius: '10px',
-            border: '1px solid rgba(124,58,237,0.3)', background: 'rgba(124,58,237,0.1)',
-            color: '#a78bfa', fontSize: '12px', fontWeight: 600,
-            cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.6 : 1,
-            fontFamily: 'inherit',
-          }}
-        >
-          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-          Refresh
-        </button>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          {running.length > 0 && (
+            <button
+              onClick={allPaused ? handleResumeAll : handlePauseAll}
+              disabled={pausingAll}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                padding: '7px 14px', borderRadius: '10px',
+                border: allPaused ? '1px solid rgba(34,197,94,0.3)' : '1px solid rgba(251,191,36,0.3)',
+                background: allPaused ? 'rgba(34,197,94,0.08)' : 'rgba(251,191,36,0.08)',
+                color: allPaused ? '#4ade80' : '#fbbf24',
+                fontSize: '12px', fontWeight: 600,
+                cursor: pausingAll ? 'not-allowed' : 'pointer',
+                opacity: pausingAll ? 0.6 : 1, fontFamily: 'inherit',
+              }}
+            >
+              {allPaused ? '\u25B6 Resume All' : '\u23F8 Pause All'}
+            </button>
+          )}
+          {running.length > 0 && (
+            <button
+              onClick={handleKillAll}
+              disabled={pausingAll}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                padding: '7px 14px', borderRadius: '10px',
+                border: '1px solid rgba(239,68,68,0.3)', background: 'rgba(239,68,68,0.08)',
+                color: '#f87171', fontSize: '12px', fontWeight: 600,
+                cursor: pausingAll ? 'not-allowed' : 'pointer',
+                opacity: pausingAll ? 0.6 : 1, fontFamily: 'inherit',
+              }}
+            >
+              Kill All
+            </button>
+          )}
+          <button
+            onClick={fetchJobs}
+            disabled={loading}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '7px 14px', borderRadius: '10px',
+              border: '1px solid rgba(124,58,237,0.3)', background: 'rgba(124,58,237,0.1)',
+              color: '#a78bfa', fontSize: '12px', fontWeight: 600,
+              cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.6 : 1,
+              fontFamily: 'inherit',
+            }}
+          >
+            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Body */}

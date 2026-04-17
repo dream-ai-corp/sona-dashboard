@@ -195,3 +195,158 @@ test.describe("Projects page", () => {
     await expect(page.locator("text=Application error")).not.toBeVisible();
   });
 });
+
+test.describe("Project text search", () => {
+  test("search input is visible when projects exist", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const cards = page.locator('a[href^="/projects/"]');
+    if ((await cards.count()) === 0) {
+      test.skip();
+      return;
+    }
+
+    await expect(page.locator('[data-testid="project-search"]')).toBeVisible();
+  });
+
+  test("typing in search filters projects by name", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const cards = page.locator('a[href^="/projects/"]');
+    const initialCount = await cards.count();
+    if (initialCount === 0) {
+      test.skip();
+      return;
+    }
+
+    // Get the first project's name and search for it
+    const firstName = await cards.first().locator("h3").textContent();
+    const searchTerm = firstName?.slice(0, 4) ?? "sona";
+
+    const searchInput = page.locator('[data-testid="project-search"]');
+    await searchInput.fill(searchTerm);
+
+    // Results should be <= initial count
+    await page.waitForTimeout(200);
+    const filteredCount = await cards.count();
+    expect(filteredCount).toBeGreaterThan(0);
+    expect(filteredCount).toBeLessThanOrEqual(initialCount);
+  });
+
+  test("search with no match shows empty state message", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const cards = page.locator('a[href^="/projects/"]');
+    if ((await cards.count()) === 0) {
+      test.skip();
+      return;
+    }
+
+    const searchInput = page.locator('[data-testid="project-search"]');
+    await searchInput.fill("zzz-this-will-not-match-any-project-zzz");
+    await page.waitForTimeout(200);
+
+    await expect(page.locator("text=/No projects matching/")).toBeVisible();
+  });
+
+  test("clear button removes search query", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const cards = page.locator('a[href^="/projects/"]');
+    if ((await cards.count()) === 0) {
+      test.skip();
+      return;
+    }
+
+    const searchInput = page.locator('[data-testid="project-search"]');
+    await searchInput.fill("zzz-no-match");
+    await page.waitForTimeout(200);
+
+    await page.locator('button[aria-label="Clear search"]').click();
+    await expect(searchInput).toHaveValue("");
+    // Projects should be visible again
+    await expect(cards.first()).toBeVisible();
+  });
+});
+
+test.describe("New Project creation", () => {
+  const TEST_PROJECT_NAME = `e2e-test-${Date.now()}`;
+
+  test.afterEach(async () => {
+    // clean up any project created during the test
+    await fetch(`http://localhost:3011/api/projects`, {
+      method: 'GET',
+    }).catch(() => {});
+    // best-effort cleanup via host — ignore errors
+    const { execSync } = await import('child_process');
+    try {
+      execSync(`sudo rm -rf /home/beniben/sona-workspace/projects/${TEST_PROJECT_NAME}`, { stdio: 'ignore' });
+    } catch {}
+  });
+
+  test("New Project button opens modal", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+    const btn = page.locator('[data-testid="new-project-btn"]');
+    await expect(btn).toBeVisible();
+    await btn.click();
+    await expect(page.locator("text=New Project").nth(1)).toBeVisible();
+    await expect(page.locator('[data-testid="new-project-name"]')).toBeVisible();
+    await expect(page.locator('[data-testid="new-project-description"]')).toBeVisible();
+    await expect(page.locator('[data-testid="new-project-features"]')).toBeVisible();
+  });
+
+  test("modal closes on Cancel", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+    await page.locator('[data-testid="new-project-btn"]').click();
+    await page.locator("button", { hasText: "Cancel" }).click();
+    await expect(page.locator('[data-testid="new-project-name"]')).not.toBeVisible();
+  });
+
+  test("shows error when name is missing", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+    await page.locator('[data-testid="new-project-btn"]').click();
+    await page.locator('[data-testid="new-project-description"]').fill("Some description");
+    await page.locator('[data-testid="new-project-submit"]').click();
+    await expect(page.locator("text=Project name is required")).toBeVisible();
+  });
+
+  test("shows error when description is missing", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+    await page.locator('[data-testid="new-project-btn"]').click();
+    await page.locator('[data-testid="new-project-name"]').fill("some-name");
+    await page.locator('[data-testid="new-project-submit"]').click();
+    await expect(page.locator("text=Description is required")).toBeVisible();
+  });
+
+  test("creates project and generates briefing.md + backlog.md", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+    await page.locator('[data-testid="new-project-btn"]').click();
+    await page.locator('[data-testid="new-project-name"]').fill(TEST_PROJECT_NAME);
+    await page.locator('[data-testid="new-project-description"]').fill("An e2e test project created by Playwright.");
+    await page.locator('[data-testid="new-project-features"]').fill("Feature A\nFeature B");
+    await page.locator('[data-testid="new-project-submit"]').click();
+
+    // modal should close and new project card should appear
+    await expect(page.locator('[data-testid="new-project-name"]')).not.toBeVisible({ timeout: 10000 });
+    await expect(page.locator("h3", { hasText: TEST_PROJECT_NAME })).toBeVisible({ timeout: 10000 });
+
+    // verify files were created via the API
+    const briefRes = await page.request.get(`/api/projects/${TEST_PROJECT_NAME}/briefing`);
+    const briefData = await briefRes.json();
+    expect(briefData.content).toContain("An e2e test project created by Playwright.");
+    expect(briefData.content).toContain("Feature A");
+
+    const backlogRes = await page.request.get(`/api/projects/${TEST_PROJECT_NAME}/backlog`);
+    const backlogData = await backlogRes.json();
+    expect(backlogData.raw ?? backlogData.content ?? JSON.stringify(backlogData)).toContain("Define acceptance criteria");
+  });
+});
