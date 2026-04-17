@@ -21,6 +21,7 @@ import {
   Activity,
   MessageSquare,
   Repeat2,
+  ListOrdered,
   Layers,
 } from 'lucide-react';
 
@@ -28,6 +29,7 @@ const navItems = [
   { icon: LayoutDashboard, label: 'Dashboard',      route: '/' },
   { icon: Bot,             label: 'Agents',         route: '/agents' },
   { icon: Briefcase,       label: 'Jobs',           route: '/jobs' },
+  { icon: ListOrdered,     label: 'Queue',          route: '/queue' },
   { icon: Activity,        label: 'Activity',       route: '/activity' },
   { icon: MessageSquare,   label: 'Conversations',  route: '/conversations' },
   { icon: Layers,          label: 'Média',          route: '/media' },

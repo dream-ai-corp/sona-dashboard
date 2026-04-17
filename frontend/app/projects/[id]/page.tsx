@@ -634,14 +634,17 @@ function SprintRow({
   sprint,
   onUpdate,
   onDelete,
+  projectId,
 }: {
   sprint: Sprint;
   onUpdate: (id: string, patch: Partial<Sprint>) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  projectId: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Sprint>({ ...sprint });
   const [saving, setSaving] = useState(false);
+  const [queueStatus, setQueueStatus] = useState<'idle' | 'launched' | 'paused' | 'loading'>('idle');
 
   const ss = sprintStatusStyle(sprint.status);
 
@@ -655,6 +658,31 @@ function SprintRow({
   const cancelEdit = () => {
     setDraft({ ...sprint });
     setEditing(false);
+  };
+
+  const handleLaunchSprint = async () => {
+    setQueueStatus('loading');
+    try {
+      const res = await fetch(`/api/queue/sprint/${sprint.id}/launch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId }),
+      });
+      if (res.ok) setQueueStatus('launched');
+      else setQueueStatus('idle');
+    } catch {
+      setQueueStatus('idle');
+    }
+  };
+
+  const handlePauseSprint = async () => {
+    setQueueStatus('loading');
+    try {
+      await fetch(`/api/queue/sprint/${sprint.id}/pause`, { method: 'POST' });
+      setQueueStatus('paused');
+    } catch {
+      setQueueStatus('idle');
+    }
   };
 
   if (editing) {
@@ -747,7 +775,47 @@ function SprintRow({
           </div>
         )}
       </div>
-      <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+      <div style={{ display: 'flex', gap: '4px', flexShrink: 0, alignItems: 'center' }}>
+        {/* Queue controls */}
+        {queueStatus === 'loading' ? (
+          <Loader2 size={13} color="#a78bfa" className="animate-spin" style={{ marginRight: '4px' }} />
+        ) : (
+          <>
+            <button
+              data-testid="sprint-launch-btn"
+              onClick={handleLaunchSprint}
+              title="Launch sprint items to queue"
+              style={{
+                background: queueStatus === 'launched' ? 'rgba(34,197,94,0.15)' : 'none',
+                border: queueStatus === 'launched' ? '1px solid rgba(34,197,94,0.3)' : 'none',
+                cursor: 'pointer',
+                color: queueStatus === 'launched' ? '#4ade80' : '#334155',
+                padding: '4px', borderRadius: '6px', transition: 'all 150ms',
+              }}
+              onMouseEnter={(e) => { if (queueStatus !== 'launched') e.currentTarget.style.color = '#4ade80'; }}
+              onMouseLeave={(e) => { if (queueStatus !== 'launched') e.currentTarget.style.color = '#334155'; }}
+            >
+              <Play size={13} />
+            </button>
+            <button
+              data-testid="sprint-pause-btn"
+              onClick={handlePauseSprint}
+              title="Remove queued items from this sprint"
+              style={{
+                background: queueStatus === 'paused' ? 'rgba(251,191,36,0.15)' : 'none',
+                border: queueStatus === 'paused' ? '1px solid rgba(251,191,36,0.3)' : 'none',
+                cursor: 'pointer',
+                color: queueStatus === 'paused' ? '#fbbf24' : '#334155',
+                padding: '4px', borderRadius: '6px', transition: 'all 150ms',
+              }}
+              onMouseEnter={(e) => { if (queueStatus !== 'paused') e.currentTarget.style.color = '#fbbf24'; }}
+              onMouseLeave={(e) => { if (queueStatus !== 'paused') e.currentTarget.style.color = '#334155'; }}
+            >
+              <Pause size={13} />
+            </button>
+          </>
+        )}
+        <div style={{ width: '1px', height: '16px', background: 'rgba(255,255,255,0.06)', margin: '0 2px' }} />
         <button
           onClick={() => setEditing(true)}
           style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#334155', padding: '4px', borderRadius: '6px', transition: 'color 150ms' }}
@@ -1766,6 +1834,7 @@ export default function ProjectDetailPage() {
                     sprint={sprint}
                     onUpdate={handleUpdateSprint}
                     onDelete={handleDeleteSprint}
+                    projectId={id}
                   />
                 ))}
               </div>
