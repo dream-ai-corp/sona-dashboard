@@ -71,24 +71,10 @@ db.exec(`
     created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
   );
 
-  CREATE TABLE IF NOT EXISTS provider_keys (
-    provider TEXT PRIMARY KEY,
-    api_key TEXT NOT NULL,
-    updated_at INTEGER DEFAULT (strftime('%s','now') * 1000)
+  CREATE TABLE IF NOT EXISTS openrouter_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
   );
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS audit_reports (
-    id TEXT PRIMARY KEY,
-    project TEXT NOT NULL,
-    sprint TEXT NOT NULL,
-    item_id TEXT,
-    status TEXT NOT NULL CHECK(status IN ('pass', 'partial', 'fail')),
-    detail TEXT,
-    created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
-  );
-  CREATE INDEX IF NOT EXISTS idx_audit_project_sprint ON audit_reports(project, sprint);
 `);
 
 // Prepared statements
@@ -2439,6 +2425,106 @@ cron.schedule("* * * * *", async () => {
     }
   } catch (err) {
     console.error("[scheduler] tick error:", err.message);
+  }
+});
+
+// ── OpenRouter config ─────────────────────────────────────────────────────────
+const OPENROUTER_API = "https://openrouter.ai/api/v1";
+
+function orGet(key) {
+  const row = db.prepare("SELECT value FROM openrouter_config WHERE key = ?").get(key);
+  return row ? row.value : null;
+}
+
+function orSet(key, value) {
+  db.prepare("INSERT INTO openrouter_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .run(key, value);
+}
+
+// GET /api/openrouter/config — return masked key + model prefs
+app.get("/api/openrouter/config", (_req, res) => {
+  const apiKey = orGet("api_key");
+  const defaultImage = orGet("default_model_image") || null;
+  const defaultVideo = orGet("default_model_video") || null;
+  const defaultAudio = orGet("default_model_audio") || null;
+  res.json({
+    ok: true,
+    configured: !!apiKey,
+    apiKeyMasked: apiKey ? `sk-or-...${apiKey.slice(-6)}` : null,
+    defaults: { image: defaultImage, video: defaultVideo, audio: defaultAudio },
+  });
+});
+
+// POST /api/openrouter/config — save api key and/or model prefs
+app.post("/api/openrouter/config", (req, res) => {
+  const { apiKey, defaults } = req.body ?? {};
+  if (apiKey !== undefined) {
+    if (typeof apiKey !== "string" || apiKey.trim() === "") {
+      return res.status(400).json({ ok: false, error: "apiKey must be a non-empty string" });
+    }
+    orSet("api_key", apiKey.trim());
+  }
+  if (defaults) {
+    if (defaults.image !== undefined) orSet("default_model_image", defaults.image);
+    if (defaults.video !== undefined) orSet("default_model_video", defaults.video);
+    if (defaults.audio !== undefined) orSet("default_model_audio", defaults.audio);
+  }
+  res.json({ ok: true });
+});
+
+// DELETE /api/openrouter/config — clear api key
+app.delete("/api/openrouter/config", (_req, res) => {
+  db.prepare("DELETE FROM openrouter_config WHERE key = 'api_key'").run();
+  res.json({ ok: true });
+});
+
+// POST /api/openrouter/test — verify key is valid by hitting /models
+app.post("/api/openrouter/test", async (_req, res) => {
+  const apiKey = orGet("api_key");
+  if (!apiKey) return res.status(400).json({ ok: false, error: "No API key configured" });
+  try {
+    const r = await fetch(`${OPENROUTER_API}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (r.ok) {
+      const data = await r.json();
+      const count = data?.data?.length ?? 0;
+      return res.json({ ok: true, modelCount: count });
+    }
+    const err = await r.text();
+    return res.status(r.status).json({ ok: false, error: err });
+  } catch (err) {
+    return res.status(503).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/openrouter/models — list available models
+app.get("/api/openrouter/models", async (_req, res) => {
+  const apiKey = orGet("api_key");
+  if (!apiKey) return res.status(400).json({ ok: false, error: "No API key configured" });
+  try {
+    const r = await fetch(`${OPENROUTER_API}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) {
+      const err = await r.text();
+      return res.status(r.status).json({ ok: false, error: err });
+    }
+    const data = await r.json();
+    // Normalize: id, name, pricing (prompt cost per token), context_length, modality
+    const models = (data?.data ?? []).map((m) => ({
+      id: m.id,
+      name: m.name || m.id,
+      contextLength: m.context_length ?? null,
+      pricing: m.pricing ?? {},
+      modality: m.modality ?? null,
+      isFree: m.pricing?.prompt === "0" || m.pricing?.prompt === 0,
+    }));
+    return res.json({ ok: true, models });
+  } catch (err) {
+    return res.status(503).json({ ok: false, error: err.message });
   }
 });
 
