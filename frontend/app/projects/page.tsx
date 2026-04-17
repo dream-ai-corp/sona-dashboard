@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Plus,
   X,
+  Search,
 } from 'lucide-react';
 
 interface Service {
@@ -176,6 +177,7 @@ export default function ProjectsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<StatusFilter>('all');
+  const [searchQuery, setSearchQuery] = useState('');
 
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState({ name: '', description: '', features: '' });
@@ -223,9 +225,15 @@ export default function ProjectsPage() {
 
   useEffect(() => { fetchProjects(); }, []);
 
-  const filtered = filter === 'all'
-    ? projects
-    : projects.filter((p) => p.status?.toLowerCase() === filter);
+  const q = searchQuery.trim().toLowerCase();
+  const filtered = projects
+    .filter((p) => filter === 'all' || p.status?.toLowerCase() === filter)
+    .filter((p) =>
+      !q ||
+      p.name.toLowerCase().includes(q) ||
+      (p.description ?? '').toLowerCase().includes(q) ||
+      p.id.toLowerCase().includes(q)
+    );
 
   const counts = {
     all: projects.length,
@@ -252,7 +260,8 @@ export default function ProjectsPage() {
               Projects
             </h1>
             <p style={{ fontSize: '12px', color: '#64748b', margin: '3px 0 0' }}>
-              {filtered.length} project{filtered.length !== 1 ? 's' : ''}{filter !== 'all' ? ` · ${filter}` : ' tracked'}
+              {filtered.length} project{filtered.length !== 1 ? 's' : ''}
+              {q ? ` matching "${searchQuery}"` : filter !== 'all' ? ` · ${filter}` : ' tracked'}
             </p>
           </div>
           <div style={{ display: 'flex', gap: '8px' }}>
@@ -297,6 +306,49 @@ export default function ProjectsPage() {
               fontSize: '13px', color: '#f87171',
             }}>
               {error}
+            </div>
+          )}
+
+          {/* Search input */}
+          {!loading && projects.length > 0 && (
+            <div style={{ position: 'relative', marginBottom: '16px' }}>
+              <Search
+                size={14}
+                color="#475569"
+                style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}
+              />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search projects by name or description…"
+                data-testid="project-search"
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  padding: '9px 14px 9px 34px',
+                  borderRadius: '12px',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  background: 'rgba(255,255,255,0.03)',
+                  color: '#f1f5f9', fontSize: '13px',
+                  fontFamily: 'inherit', outline: 'none',
+                  transition: 'border-color 150ms',
+                }}
+                onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(124,58,237,0.4)'; }}
+                onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  aria-label="Clear search"
+                  style={{
+                    position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)',
+                    background: 'none', border: 'none', cursor: 'pointer', color: '#475569', padding: '2px',
+                    display: 'flex', alignItems: 'center',
+                  }}
+                >
+                  <X size={13} />
+                </button>
+              )}
             </div>
           )}
 
@@ -364,9 +416,19 @@ export default function ProjectsPage() {
             <div style={{ textAlign: 'center', padding: '60px 0' }}>
               <FolderOpen size={40} color="#1e2535" style={{ margin: '0 auto 12px', display: 'block' }} />
               <p style={{ fontSize: '14px', color: '#334155', margin: 0 }}>
-                {filter !== 'all' ? `No ${filter} projects` : 'No projects found'}
+                {q ? `No projects matching "${searchQuery}"` : filter !== 'all' ? `No ${filter} projects` : 'No projects found'}
               </p>
-              {filter !== 'all' ? (
+              {q ? (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  style={{
+                    marginTop: '8px', fontSize: '12px', color: '#a78bfa',
+                    background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                  }}
+                >
+                  Clear search
+                </button>
+              ) : filter !== 'all' ? (
                 <button
                   onClick={() => setFilter('all')}
                   style={{

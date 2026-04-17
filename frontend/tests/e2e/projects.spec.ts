@@ -196,6 +196,83 @@ test.describe("Projects page", () => {
   });
 });
 
+test.describe("Project text search", () => {
+  test("search input is visible when projects exist", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const cards = page.locator('a[href^="/projects/"]');
+    if ((await cards.count()) === 0) {
+      test.skip();
+      return;
+    }
+
+    await expect(page.locator('[data-testid="project-search"]')).toBeVisible();
+  });
+
+  test("typing in search filters projects by name", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const cards = page.locator('a[href^="/projects/"]');
+    const initialCount = await cards.count();
+    if (initialCount === 0) {
+      test.skip();
+      return;
+    }
+
+    // Get the first project's name and search for it
+    const firstName = await cards.first().locator("h3").textContent();
+    const searchTerm = firstName?.slice(0, 4) ?? "sona";
+
+    const searchInput = page.locator('[data-testid="project-search"]');
+    await searchInput.fill(searchTerm);
+
+    // Results should be <= initial count
+    await page.waitForTimeout(200);
+    const filteredCount = await cards.count();
+    expect(filteredCount).toBeGreaterThan(0);
+    expect(filteredCount).toBeLessThanOrEqual(initialCount);
+  });
+
+  test("search with no match shows empty state message", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const cards = page.locator('a[href^="/projects/"]');
+    if ((await cards.count()) === 0) {
+      test.skip();
+      return;
+    }
+
+    const searchInput = page.locator('[data-testid="project-search"]');
+    await searchInput.fill("zzz-this-will-not-match-any-project-zzz");
+    await page.waitForTimeout(200);
+
+    await expect(page.locator("text=/No projects matching/")).toBeVisible();
+  });
+
+  test("clear button removes search query", async ({ page }) => {
+    await page.goto("/projects");
+    await page.waitForLoadState("networkidle");
+
+    const cards = page.locator('a[href^="/projects/"]');
+    if ((await cards.count()) === 0) {
+      test.skip();
+      return;
+    }
+
+    const searchInput = page.locator('[data-testid="project-search"]');
+    await searchInput.fill("zzz-no-match");
+    await page.waitForTimeout(200);
+
+    await page.locator('button[aria-label="Clear search"]').click();
+    await expect(searchInput).toHaveValue("");
+    // Projects should be visible again
+    await expect(cards.first()).toBeVisible();
+  });
+});
+
 test.describe("New Project creation", () => {
   const TEST_PROJECT_NAME = `e2e-test-${Date.now()}`;
 
