@@ -169,7 +169,7 @@ function parseJobDir(jobId, dirPath, project) {
 
   let goal = null;
   if (fs.existsSync(goalPath)) {
-    try { goal = fs.readFileSync(goalPath, "utf-8").trim().slice(0, 500); } catch {}
+    try { goal = fs.readFileSync(goalPath, "utf-8").trim().slice(0, 2000); } catch {}
   }
 
   let mtime = 0;
@@ -181,7 +181,7 @@ function parseJobDir(jobId, dirPath, project) {
   if (fs.existsSync(resultPath)) {
     try {
       const raw = JSON.parse(fs.readFileSync(resultPath, "utf-8"));
-      if (!goal && raw.goal) goal = String(raw.goal).slice(0, 500);
+      if (!goal && raw.goal) goal = String(raw.goal).slice(0, 2000);
 
       let status = raw.status;
       if (!status) {
@@ -1684,6 +1684,254 @@ app.post("/api/generate/image", async (req, res) => {
     console.error("[generate/image] Replicate error:", err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// ── Video Generation ──────────────────────────────────────────────────────────
+// POST /api/generate/video          → { ok: true, jobId }
+// GET  /api/generate/video/:jobId   → { ok, status, progress, message, url?, error? }
+// GET  /api/generate/video/:jobId/progress → SSE stream of job state until done
+
+const VIDEO_MODEL_REPLICATE = {
+  "wan2.1":       "wavespeedai/wan-2.1-t2v-480p",
+  "animatediff":  "lucataco/animate-diff",
+  "stable-video": "stability-ai/stable-video-diffusion",
+  "cogvideox":    "chenxwh/cogvideox-5b",
+  "mochi-1":      "genmoai/mochi-1",
+};
+
+const VIDEO_MODEL_FAL = {
+  "wan2.1":    "fal-ai/wan-t2v",
+  "mochi-1":   "fal-ai/mochi-v1",
+  "cogvideox": "fal-ai/cogvideox-5b",
+};
+
+// In-memory job store — completed jobs are pruned after 10 min
+const videoJobs = new Map();
+
+function createVideoJob() {
+  const jobId = randomUUID();
+  videoJobs.set(jobId, {
+    status: "pending",
+    progress: 0,
+    message: "Initialisation...",
+    url: null,
+    error: null,
+    createdAt: Date.now(),
+  });
+  return jobId;
+}
+
+function updateVideoJob(jobId, updates) {
+  const job = videoJobs.get(jobId);
+  if (job) videoJobs.set(jobId, { ...job, ...updates });
+}
+
+// Prune jobs older than 10 min that are no longer running
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [id, job] of videoJobs) {
+    if (job.status !== "running" && job.status !== "pending" && job.createdAt < cutoff) {
+      videoJobs.delete(id);
+    }
+  }
+}, 60_000);
+
+async function pollReplicateVideo(predictionId, token, jobId, maxWaitMs = 180_000) {
+  const startedAt = Date.now();
+  const deadline = startedAt + maxWaitMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const r = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
+      headers: { Authorization: `Token ${token}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const data = await r.json();
+    if (data.status === "succeeded") {
+      const output = Array.isArray(data.output) ? data.output[0] : data.output;
+      if (!output) throw new Error("Replicate: empty output");
+      return { url: output };
+    }
+    if (data.status === "failed" || data.status === "canceled") {
+      throw new Error(data.error || `Replicate: prediction ${data.status}`);
+    }
+    const elapsed = Date.now() - startedAt;
+    const estimatedProgress = Math.min(95, 15 + Math.round((elapsed / maxWaitMs) * 80));
+    updateVideoJob(jobId, { progress: estimatedProgress, message: `Génération Replicate… (${data.status})` });
+  }
+  throw new Error("Replicate: timeout — video generation took too long");
+}
+
+async function pollFalVideo(endpoint, requestId, apiKey, jobId, maxWaitMs = 180_000) {
+  const startedAt = Date.now();
+  const deadline = startedAt + maxWaitMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const statusRes = await fetch(
+      `https://queue.fal.run/${endpoint}/requests/${requestId}/status`,
+      { headers: { Authorization: `Key ${apiKey}` }, signal: AbortSignal.timeout(10_000) }
+    );
+    if (!statusRes.ok) continue;
+    const status = await statusRes.json();
+    if (status.status === "COMPLETED") {
+      const resultRes = await fetch(
+        `https://queue.fal.run/${endpoint}/requests/${requestId}`,
+        { headers: { Authorization: `Key ${apiKey}` }, signal: AbortSignal.timeout(10_000) }
+      );
+      if (!resultRes.ok) throw new Error("fal.ai: could not fetch result");
+      const result = await resultRes.json();
+      const url = result.video?.url ?? result.video_url;
+      if (!url) throw new Error("fal.ai: no video URL in response");
+      return { url };
+    }
+    if (status.status === "FAILED") throw new Error("fal.ai: generation failed");
+    const elapsed = Date.now() - startedAt;
+    const estimatedProgress = Math.min(95, 15 + Math.round((elapsed / maxWaitMs) * 80));
+    const logs = Array.isArray(status.logs) ? status.logs : [];
+    const lastLog = logs[logs.length - 1]?.message ?? "En cours…";
+    updateVideoJob(jobId, { progress: estimatedProgress, message: lastLog.slice(0, 120) });
+  }
+  throw new Error("fal.ai: timeout — video generation took too long");
+}
+
+async function runVideoGeneration(jobId, prompt, model, duration) {
+  updateVideoJob(jobId, { status: "running", progress: 5, message: "Connexion au provider…" });
+  try {
+    const replicateKey = getProviderKey("replicate");
+    const falKey = getProviderKey("fal");
+
+    if (!replicateKey && !falKey) {
+      // Dev mode placeholder — returns an SVG data URL
+      await new Promise((r) => setTimeout(r, 1500));
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="100%" height="100%" fill="#1e1b4b"/><text x="50%" y="50%" font-family="monospace" font-size="22" fill="#a78bfa" text-anchor="middle" dominant-baseline="middle">[dev] ${prompt.slice(0, 40)}</text></svg>`;
+      const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+      updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Terminé (dev mode)", url: dataUrl });
+      return;
+    }
+
+    // fal.ai — fast inference for supported models
+    if (falKey && VIDEO_MODEL_FAL[model]) {
+      updateVideoJob(jobId, { progress: 10, message: "Soumission à fal.ai…" });
+      const submitRes = await fetch(`https://queue.fal.run/${VIDEO_MODEL_FAL[model]}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Key ${falKey}` },
+        body: JSON.stringify({ prompt, num_frames: duration * 8 }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!submitRes.ok) {
+        const err = await submitRes.json().catch(() => ({}));
+        throw new Error(err.detail ?? `fal.ai submit error ${submitRes.status}`);
+      }
+      const submission = await submitRes.json();
+      if (!submission.request_id) throw new Error("fal.ai: no request_id");
+      updateVideoJob(jobId, { progress: 15, message: "Requête soumise, génération en cours…" });
+      const result = await pollFalVideo(VIDEO_MODEL_FAL[model], submission.request_id, falKey, jobId);
+      updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Vidéo générée !", url: result.url });
+      return;
+    }
+
+    // Replicate — broader model support
+    if (replicateKey) {
+      const modelPath = VIDEO_MODEL_REPLICATE[model] ?? model;
+      updateVideoJob(jobId, { progress: 10, message: "Soumission à Replicate…" });
+      const createRes = await fetch(`https://api.replicate.com/v1/models/${modelPath}/predictions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Token ${replicateKey}` },
+        body: JSON.stringify({
+          input: { prompt, num_frames: duration * 8, num_inference_steps: 25, guidance_scale: 7.5 },
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!createRes.ok) {
+        const err = await createRes.json().catch(() => ({}));
+        throw new Error(err.detail ?? `Replicate create error ${createRes.status}`);
+      }
+      const prediction = await createRes.json();
+      if (prediction.error) throw new Error(prediction.error);
+      if (!prediction.id) throw new Error("Replicate: no prediction ID");
+      updateVideoJob(jobId, { progress: 15, message: "Prédiction créée, génération en cours…" });
+      const result = await pollReplicateVideo(prediction.id, replicateKey, jobId);
+      updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Vidéo générée !", url: result.url });
+      return;
+    }
+
+    throw new Error("Aucun provider configuré. Ajoutez votre clé Replicate dans Paramètres → Connexions.");
+  } catch (err) {
+    console.error("[generate/video] error:", err.message);
+    updateVideoJob(jobId, { status: "failed", progress: 0, message: err.message, error: err.message });
+  }
+}
+
+app.post("/api/generate/video", (req, res) => {
+  const { prompt, model = "wan2.1", duration = 4 } = req.body || {};
+  if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
+    return res.status(400).json({ ok: false, error: "prompt is required" });
+  }
+  if (typeof model !== "string") {
+    return res.status(400).json({ ok: false, error: "model must be a string" });
+  }
+  if (![2, 4, 8].includes(duration)) {
+    return res.status(400).json({ ok: false, error: "duration must be 2, 4, or 8" });
+  }
+  const jobId = createVideoJob();
+  runVideoGeneration(jobId, prompt.trim(), model, duration).catch((err) => {
+    console.error("[generate/video] unhandled:", err.message);
+    updateVideoJob(jobId, { status: "failed", error: err.message, message: err.message });
+  });
+  res.json({ ok: true, jobId });
+});
+
+app.get("/api/generate/video/:jobId", (req, res) => {
+  const job = videoJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+  res.json({ ok: true, ...job });
+});
+
+app.get("/api/generate/video/:jobId/progress", (req, res) => {
+  const { jobId } = req.params;
+  const job = videoJobs.get(jobId);
+  if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  // Send current state immediately
+  res.write(`data: ${JSON.stringify({ ...videoJobs.get(jobId) })}\n\n`);
+
+  // If already terminal, close right away
+  const initial = videoJobs.get(jobId);
+  if (initial && (initial.status === "succeeded" || initial.status === "failed")) {
+    res.end();
+    return;
+  }
+
+  let lastSent = JSON.stringify(initial);
+
+  const pollInterval = setInterval(() => {
+    const j = videoJobs.get(jobId);
+    if (!j) { clearInterval(pollInterval); if (!res.writableEnded) res.end(); return; }
+    const serialized = JSON.stringify(j);
+    if (serialized !== lastSent && !res.writableEnded) {
+      res.write(`data: ${serialized}\n\n`);
+      lastSent = serialized;
+    }
+    if (j.status === "succeeded" || j.status === "failed") {
+      clearInterval(pollInterval);
+      clearInterval(heartbeat);
+      if (!res.writableEnded) res.end();
+    }
+  }, 1000);
+
+  const heartbeat = setInterval(() => {
+    if (res.writableEnded) { clearInterval(heartbeat); return; }
+    res.write(": heartbeat\n\n");
+  }, 20_000);
+
+  req.on("close", () => {
+    clearInterval(pollInterval);
+    clearInterval(heartbeat);
+  });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────

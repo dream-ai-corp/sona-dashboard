@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Video, Download, Loader2, AlertCircle, Wand2 } from 'lucide-react';
 
 interface VideoModel {
@@ -71,14 +71,25 @@ export default function VideoGenModal() {
   const [genState, setGenState] = useState<GenState>('idle');
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [progressMsg, setProgressMsg] = useState('');
+  const esRef = useRef<EventSource | null>(null);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) return;
+
+    // Close any previous SSE connection
+    esRef.current?.close();
+    esRef.current = null;
+
     setGenState('loading');
     setVideoUrl(null);
     setErrorMsg(null);
+    setProgress(0);
+    setProgressMsg('Démarrage…');
 
     try {
+      // 1. Submit to backend — get jobId
       const res = await fetch('/api/generate/video', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -88,12 +99,54 @@ export default function VideoGenModal() {
           duration: DURATION_SECONDS[duration],
         }),
       });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || 'Generation failed');
-      setVideoUrl(data.url);
-      setGenState('done');
+      const data = await res.json() as { ok: boolean; jobId?: string; error?: string };
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Soumission échouée');
+
+      const { jobId } = data;
+      if (!jobId) throw new Error('Pas de jobId retourné');
+
+      // 2. Subscribe to SSE progress stream
+      const es = new EventSource(`/api/generate/video/${jobId}/progress`);
+      esRef.current = es;
+
+      es.onmessage = (event) => {
+        let job: {
+          status: string;
+          progress: number;
+          message: string;
+          url?: string;
+          error?: string;
+        };
+        try {
+          job = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+
+        setProgress(job.progress ?? 0);
+        setProgressMsg(job.message ?? '');
+
+        if (job.status === 'succeeded') {
+          setVideoUrl(job.url ?? null);
+          setGenState('done');
+          es.close();
+          esRef.current = null;
+        } else if (job.status === 'failed') {
+          setErrorMsg(job.error ?? 'Génération échouée');
+          setGenState('error');
+          es.close();
+          esRef.current = null;
+        }
+      };
+
+      es.onerror = () => {
+        setErrorMsg('Connexion SSE perdue. Réessayez.');
+        setGenState('error');
+        es.close();
+        esRef.current = null;
+      };
     } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : 'Unknown error');
+      setErrorMsg(err instanceof Error ? err.message : 'Erreur inconnue');
       setGenState('error');
     }
   }, [prompt, model, duration]);
@@ -250,6 +303,42 @@ export default function VideoGenModal() {
           </>
         )}
       </button>
+
+      {/* Progress bar — shown while loading */}
+      {isLoading && (
+        <div
+          data-testid="video-gen-progress"
+          style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}
+        >
+          <div
+            style={{
+              height: '4px',
+              borderRadius: '2px',
+              background: 'rgba(255,255,255,0.06)',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              data-testid="video-gen-progress-bar"
+              style={{
+                height: '100%',
+                width: `${progress}%`,
+                background: 'linear-gradient(90deg, #0e7490, #67e8f9)',
+                borderRadius: '2px',
+                transition: 'width 800ms ease',
+              }}
+            />
+          </div>
+          {progressMsg && (
+            <span
+              data-testid="video-gen-progress-msg"
+              style={{ fontSize: '12px', color: '#64748b', fontFamily: 'monospace' }}
+            >
+              {progressMsg}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Error */}
       {genState === 'error' && errorMsg && (
