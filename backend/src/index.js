@@ -2339,6 +2339,65 @@ app.get("/api/generate/video/:jobId/progress", (req, res) => {
   });
 });
 
+// ── S3-11: Voice command intent detection ─────────────────────────────────────
+
+/**
+ * Detect a media generation intent from a transcribed voice command.
+ * Handles French and common English patterns.
+ *
+ * @param {string} text - transcribed voice text
+ * @returns {{ intent: 'image'|'video'|'audio'|null, prompt: string|null }}
+ */
+function detectMediaIntent(text) {
+  if (!text || typeof text !== "string") return { intent: null, prompt: null };
+
+  const normalized = text.trim().toLowerCase();
+
+  const imagePatterns = [
+    /(?:génère?|generè?|générer?|générez?|crée?|créer?|créez?|fais?|faire?)\s+(?:une?\s+)?(?:image|photo|illustration|dessin|visuel)\s+(?:de\s+|d'|du\s+|des\s+)?(.+)/i,
+    /(?:generate?|create?|draw|make?)\s+(?:an?\s+)?(?:image|photo|picture|illustration)\s+(?:of\s+|from\s+)?(.+)/i,
+    /^dessines?\s+(.+)/i,
+    /^(?:image|photo)\s*[:;]\s*(.+)/i,
+  ];
+
+  const videoPatterns = [
+    /(?:génère?|generè?|générer?|générez?|crée?|créer?|créez?|fais?|faire?)\s+(?:une?\s+)?(?:vidéo|video|clip|animation|animé)\s+(?:de\s+|d'|du\s+|des\s+)?(.+)/i,
+    /(?:generate?|create?|make?)\s+(?:an?\s+)?(?:video|clip|animation)\s+(?:of\s+|from\s+)?(.+)/i,
+    /^(?:vidéo|video)\s*[:;]\s*(.+)/i,
+  ];
+
+  const audioPatterns = [
+    /(?:génère?|generè?|générer?|générez?|crée?|créer?|créez?|compose?|joue?)\s+(?:une?\s+)?(?:musique|chanson|son|audio|mélodie|bande.son)\s+(?:de\s+|d'|du\s+|des\s+|sur\s+)?(.+)/i,
+    /(?:generate?|create?|compose?|make?)\s+(?:an?\s+)?(?:music|song|audio|sound|melody)\s+(?:of\s+|from\s+|about\s+)?(.+)/i,
+    /^(?:musique|music|audio)\s*[:;]\s*(.+)/i,
+  ];
+
+  for (const re of imagePatterns) {
+    const m = normalized.match(re);
+    if (m) return { intent: "image", prompt: m[1].trim() };
+  }
+  for (const re of videoPatterns) {
+    const m = normalized.match(re);
+    if (m) return { intent: "video", prompt: m[1].trim() };
+  }
+  for (const re of audioPatterns) {
+    const m = normalized.match(re);
+    if (m) return { intent: "audio", prompt: m[1].trim() };
+  }
+
+  return { intent: null, prompt: null };
+}
+
+// POST /api/intent/detect — detect media generation intent from text
+app.post("/api/intent/detect", (req, res) => {
+  const { text } = req.body ?? {};
+  if (typeof text !== "string") {
+    return res.status(400).json({ ok: false, error: "text (string) required" });
+  }
+  const result = detectMediaIntent(text);
+  return res.json({ ok: true, ...result });
+});
+
 // ── Audit reports ─────────────────────────────────────────────────────────────
 app.get("/api/audits", (req, res) => {
   const { project, sprint } = req.query;
