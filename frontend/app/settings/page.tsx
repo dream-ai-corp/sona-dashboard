@@ -768,6 +768,8 @@ function ProviderApiKeysSection() {
     { provider: 'huggingface', label: 'HuggingFace API Key', placeholder: 'hf_…' },
     { provider: 'together',   label: 'Together AI API Key (free credits)', placeholder: 'together-…' },
     { provider: 'fal',        label: 'Fal.ai API Key (free credits)', placeholder: 'fal-…' },
+    { provider: 'kling',      label: 'Kling AI — vidéo (66 crédits/jour gratuits)', placeholder: 'accessKey:secretKey' },
+    { provider: 'veo',        label: 'Google Veo — vidéo (100 crédits/mois gratuits)', placeholder: 'AIza…' },
   ];
 
   const configuredCount = providers.filter((p) => keys[p.provider]?.trim()).length;

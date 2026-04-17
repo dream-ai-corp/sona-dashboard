@@ -1,6 +1,28 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 const FAKE_VIDEO = 'https://example.com/fake-video.mp4';
+const TEST_JOB_ID = 'test-job-s307';
+
+/** Mocks the full SSE-based video generation flow for successful generation. */
+async function mockSuccessfulGeneration(page: Page, jobId = TEST_JOB_ID) {
+  await page.route('**/api/generate/video', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, jobId }),
+    });
+  });
+  const sseBody = `data: ${JSON.stringify({ status: 'succeeded', progress: 100, message: 'Terminé', url: FAKE_VIDEO })}\n\n`;
+  await page.route(`**/${jobId}/progress`, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      headers: { 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' },
+      body: sseBody,
+    });
+  });
+}
 
 test.describe('Media Page — Video Generation Modal (S3-07)', () => {
   test.beforeEach(async ({ page }) => {
@@ -28,7 +50,36 @@ test.describe('Media Page — Video Generation Modal (S3-07)', () => {
     await expect(select).toBeVisible();
     const options = await select.locator('option').allInnerTexts();
     expect(options.some((o) => o.includes('Wan'))).toBeTruthy();
-    expect(options.some((o) => o.includes('ByteDance') || o.includes('AnimateDiff'))).toBeTruthy();
+    expect(options.some((o) => o.includes('AnimateDiff'))).toBeTruthy();
+  });
+
+  test('model dropdown loads Kling models when backend returns them', async ({ page }) => {
+    await page.route('**/api/models/video', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          models: [
+            { id: 'wan2.1',   label: 'Wan2.1',                 provider: 'Wan-AI',  tier: 'free' },
+            { id: 'kling-v1', label: 'Kling v1 (standard)',    provider: 'kling',   tier: 'free', note: '66 crédits/jour' },
+            { id: 'kling-v2', label: 'Kling v2 / 3.0 (master)', provider: 'kling', tier: 'free', note: '66 crédits/jour' },
+            { id: 'veo-2',    label: 'Google Veo 2 (HD)',       provider: 'veo',    tier: 'free', note: '100 crédits/mois' },
+          ],
+        }),
+      });
+    });
+    await page.goto('/media?tab=video');
+    const select = page.getByTestId('video-gen-model');
+    await expect(select).toBeVisible();
+    // Wait for the dynamic options to load (option elements inside select are never "visible"
+    // per Playwright, so we poll allInnerTexts instead)
+    await expect.poll(async () => {
+      const texts = await select.locator('option').allInnerTexts();
+      return texts.some((t) => t.includes('Kling'));
+    }, { timeout: 5000 }).toBe(true);
+    const options = await select.locator('option').allInnerTexts();
+    expect(options.some((o) => o.includes('Veo'))).toBeTruthy();
   });
 
   test('duration selector has 2s, 4s and 8s options', async ({ page }) => {
@@ -64,13 +115,20 @@ test.describe('Media Page — Video Generation Modal (S3-07)', () => {
   });
 
   test('Generate button shows loading state on click', async ({ page }) => {
+    // POST resolves slowly; progress SSE never arrives → loading persists
     await page.route('**/api/generate/video', async (route) => {
-      await new Promise((r) => setTimeout(r, 300));
+      if (route.request().method() !== 'POST') return route.continue();
+      await new Promise((r) => setTimeout(r, 500));
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ url: FAKE_VIDEO }),
+        body: JSON.stringify({ ok: true, jobId: 'loading-job' }),
       });
+    });
+    // SSE stream hangs (never completes) → loading state persists during check
+    await page.route('**/loading-job/progress', async (route) => {
+      await new Promise((r) => setTimeout(r, 5000));
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' });
     });
 
     await page.getByTestId('video-gen-prompt').fill('a test video');
@@ -79,28 +137,14 @@ test.describe('Media Page — Video Generation Modal (S3-07)', () => {
   });
 
   test('video preview is shown after successful generation', async ({ page }) => {
-    await page.route('**/api/generate/video', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ url: FAKE_VIDEO }),
-      });
-    });
-
+    await mockSuccessfulGeneration(page);
     await page.getByTestId('video-gen-prompt').fill('a beautiful sunset timelapse');
     await page.getByTestId('video-gen-submit').click();
     await expect(page.getByTestId('video-gen-preview')).toBeVisible({ timeout: 10000 });
   });
 
   test('download button appears after video is generated', async ({ page }) => {
-    await page.route('**/api/generate/video', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ url: FAKE_VIDEO }),
-      });
-    });
-
+    await mockSuccessfulGeneration(page);
     await page.getByTestId('video-gen-prompt').fill('ocean waves');
     await page.getByTestId('video-gen-submit').click();
     await expect(page.getByTestId('video-gen-download')).toBeVisible({ timeout: 10000 });
@@ -108,10 +152,11 @@ test.describe('Media Page — Video Generation Modal (S3-07)', () => {
 
   test('error message is displayed on generation failure', async ({ page }) => {
     await page.route('**/api/generate/video', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
       await route.fulfill({
         status: 422,
         contentType: 'application/json',
-        body: JSON.stringify({ error: 'Model unavailable' }),
+        body: JSON.stringify({ ok: false, error: 'Model unavailable' }),
       });
     });
 
@@ -121,14 +166,7 @@ test.describe('Media Page — Video Generation Modal (S3-07)', () => {
   });
 
   test('metadata chips show model and duration after generation', async ({ page }) => {
-    await page.route('**/api/generate/video', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ url: FAKE_VIDEO }),
-      });
-    });
-
+    await mockSuccessfulGeneration(page);
     await page.getByTestId('video-gen-prompt').fill('sunset');
     const durationGroup = page.getByTestId('video-gen-duration');
     await durationGroup.getByRole('button', { name: '8s' }).click();
