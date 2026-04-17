@@ -5,6 +5,9 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import Sidebar from '@/components/Sidebar';
 import LeadsPanel from '@/components/LeadsPanel';
+import BrainstormPanel from '@/components/BrainstormPanel';
+import FilesPanel from '@/components/FilesPanel';
+import { marked } from 'marked';
 import {
   ChevronLeft,
   FolderOpen,
@@ -40,7 +43,9 @@ interface Project {
   tags?: string[];
   services?: Service[];
   git?: { remote?: string };
+  urls?: Record<string, string>;
   hasBacklog: boolean;
+  priority?: 'high' | 'medium' | 'low';
 }
 
 interface BacklogItem {
@@ -74,6 +79,16 @@ interface Job {
   completedAt?: number;
   elapsedSec?: number;
   mtime?: number;
+}
+
+interface AuditReport {
+  id: string;
+  project: string;
+  sprint: string;
+  item_id: string | null;
+  status: 'pass' | 'partial' | 'fail';
+  detail: string | null;
+  created_at: number;
 }
 
 function statusStyle(status: string) {
@@ -118,7 +133,161 @@ const primaryBtnStyle: React.CSSProperties = {
   cursor: 'pointer', fontFamily: 'inherit',
 };
 
-function BacklogHeader({ header, level }: { header: string; level: number }) {
+
+type AuditStatus = 'pass' | 'partial' | 'fail' | null;
+
+function auditChipStyle(status: AuditStatus): { color: string; bg: string; border: string; label: string } {
+  switch (status) {
+    case 'pass':    return { color: '#4ade80', bg: 'rgba(34,197,94,0.12)',   border: 'rgba(34,197,94,0.3)',   label: 'Audit OK' };
+    case 'partial': return { color: '#fbbf24', bg: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.3)', label: 'Audit partiel' };
+    case 'fail':    return { color: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.3)', label: 'Audit FAIL' };
+    default:        return { color: '#64748b', bg: 'rgba(100,116,139,0.08)', border: 'rgba(100,116,139,0.2)', label: 'Non audité' };
+  }
+}
+
+function auditItemIconStyle(status: AuditStatus): { color: string; title: string } {
+  switch (status) {
+    case 'pass':    return { color: '#4ade80', title: 'Audit: PASS' };
+    case 'partial': return { color: '#fbbf24', title: 'Audit: PARTIAL' };
+    case 'fail':    return { color: '#f87171', title: 'Audit: FAIL' };
+    default:        return { color: 'transparent', title: '' };
+  }
+}
+
+function AuditModal({
+  sprint,
+  reports,
+  onClose,
+}: {
+  sprint: string;
+  reports: AuditReport[];
+  onClose: () => void;
+}) {
+  const sprintReport = reports.find((r) => !r.item_id) ?? reports[0];
+  const itemReports = reports.filter((r) => r.item_id);
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '24px',
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: '16px', padding: '24px', maxWidth: '600px', width: '100%',
+        maxHeight: '80vh', overflowY: 'auto',
+        boxShadow: '0 24px 64px rgba(0,0,0,0.6)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '16px' }}>
+          <div>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '4px' }}>
+              Rapport d'audit
+            </div>
+            <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0', margin: 0 }}>{sprint}</h3>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#475569', padding: '4px' }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {sprintReport && (
+          <div style={{
+            padding: '14px', borderRadius: '10px',
+            background: sprintReport.status === 'pass'
+              ? 'rgba(34,197,94,0.06)' : sprintReport.status === 'partial'
+              ? 'rgba(251,191,36,0.06)' : 'rgba(248,113,113,0.06)',
+            border: `1px solid ${sprintReport.status === 'pass' ? 'rgba(34,197,94,0.2)' : sprintReport.status === 'partial' ? 'rgba(251,191,36,0.2)' : 'rgba(248,113,113,0.2)'}`,
+            marginBottom: '16px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: sprintReport.detail ? '10px' : 0 }}>
+              {sprintReport.status === 'pass' && <CheckCircle2 size={15} color="#4ade80" />}
+              {sprintReport.status === 'partial' && <AlertCircle size={15} color="#fbbf24" />}
+              {sprintReport.status === 'fail' && <X size={15} color="#f87171" />}
+              <span style={{
+                fontSize: '12px', fontWeight: 700,
+                color: sprintReport.status === 'pass' ? '#4ade80' : sprintReport.status === 'partial' ? '#fbbf24' : '#f87171',
+                textTransform: 'uppercase', letterSpacing: '0.06em',
+              }}>
+                {sprintReport.status}
+              </span>
+              <span style={{ fontSize: '11px', color: '#475569', marginLeft: 'auto' }}>
+                {new Date(sprintReport.created_at).toLocaleDateString()}
+              </span>
+            </div>
+            {sprintReport.detail && (
+              <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                {sprintReport.detail}
+              </p>
+            )}
+          </div>
+        )}
+
+        {itemReports.length > 0 && (
+          <div>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>
+              Par item
+            </div>
+            {itemReports.map((r) => {
+              const chip = auditChipStyle(r.status);
+              return (
+                <div key={r.id} style={{
+                  display: 'flex', gap: '10px', padding: '10px 12px',
+                  borderRadius: '8px', marginBottom: '6px',
+                  background: 'rgba(255,255,255,0.02)',
+                  border: '1px solid rgba(255,255,255,0.05)',
+                }}>
+                  <span style={{
+                    fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '5px',
+                    background: chip.bg, color: chip.color, border: `1px solid ${chip.border}`,
+                    flexShrink: 0, alignSelf: 'flex-start', letterSpacing: '0.04em',
+                  }}>
+                    {r.item_id}
+                  </span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '11px', fontWeight: 600, color: chip.color, marginBottom: r.detail ? '4px' : 0 }}>
+                      {r.status.toUpperCase()}
+                    </div>
+                    {r.detail && (
+                      <p style={{ fontSize: '12px', color: '#64748b', margin: 0, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                        {r.detail}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {reports.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '20px 0', color: '#334155', fontSize: '13px' }}>
+            Aucun rapport d'audit pour ce sprint.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BacklogHeader({
+  header,
+  level,
+  auditStatus,
+  onAuditClick,
+}: {
+  header: string;
+  level: number;
+  auditStatus: AuditStatus;
+  onAuditClick: () => void;
+}) {
+  const chip = auditChipStyle(auditStatus);
   return (
     <div
       data-testid="backlog-section-header"
@@ -147,6 +316,18 @@ function BacklogHeader({ header, level }: { header: string; level: number }) {
       >
         {header}
       </span>
+      <button
+        onClick={onAuditClick}
+        title={chip.label}
+        style={{
+          fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: '20px',
+          background: chip.bg, color: chip.color, border: `1px solid ${chip.border}`,
+          cursor: 'pointer', letterSpacing: '0.05em', transition: 'all 150ms',
+          fontFamily: 'inherit',
+        }}
+      >
+        Audit
+      </button>
     </div>
   );
 }
@@ -166,12 +347,14 @@ function BacklogItemRow({
   onEdit,
   onPriorityChange,
   saving,
+  auditStatus,
 }: {
   item: BacklogItem;
   onToggle: (item: BacklogItem) => void;
   onEdit: (item: BacklogItem, text: string) => void;
   onPriorityChange: (item: BacklogItem, priority: 'P1' | 'P2' | 'P3' | null) => void;
   saving: boolean;
+  auditStatus: AuditStatus;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.text);
@@ -243,6 +426,18 @@ function BacklogItemRow({
       >
         {item.priority ?? '—'}
       </button>
+
+      {/* Audit status icon */}
+      {auditStatus && (() => {
+        const icon = auditItemIconStyle(auditStatus);
+        return (
+          <span title={icon.title} style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
+            {auditStatus === 'pass'    && <CheckCircle2 size={13} color={icon.color} />}
+            {auditStatus === 'partial' && <AlertCircle  size={13} color={icon.color} />}
+            {auditStatus === 'fail'    && <X            size={13} color={icon.color} />}
+          </span>
+        );
+      })()}
 
       {editing ? (
         <div style={{ flex: 1, display: 'flex', gap: '6px', alignItems: 'center' }}>
@@ -466,9 +661,18 @@ export default function ProjectDetailPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(true);
 
+  // Audit state
+  const [auditReports, setAuditReports] = useState<AuditReport[]>([]);
+  const [auditModal, setAuditModal] = useState<{ sprint: string; reports: AuditReport[] } | null>(null);
+  const [sprintsOpen, setSprintsOpen] = useState(false);
+    const [jobFilter, setJobFilter] = useState<'all' | 'running' | 'done' | 'failed'>('all');
+
   // Status badge dropdown
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
   const [statusSaving, setStatusSaving] = useState(false);
+  const [priorityDropdownOpen, setPriorityDropdownOpen] = useState(false);
+  const [prioritySaving, setPrioritySaving] = useState(false);
+  const priorityDropdownRef = useRef<HTMLDivElement>(null);
   const statusDropdownRef = useRef<HTMLDivElement>(null);
 
   // Voice input for backlog
@@ -566,12 +770,23 @@ export default function ProjectDetailPage() {
     }
   }, [id]);
 
+  const fetchAudits = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/audits?project=${encodeURIComponent(id)}`);
+      const data = await res.json() as { audits?: AuditReport[]; error?: string };
+      setAuditReports(data.audits ?? []);
+    } catch {
+      setAuditReports([]);
+    }
+  }, [id]);
+
   useEffect(() => {
     fetchProject();
     fetchBacklog();
     fetchBrief();
     fetchSprints();
     fetchJobs();
+    fetchAudits();
 
     // Silent auto-refresh every 5s — backlog and jobs can change while a daemon job runs
     const silentRefreshBacklog = async () => {
@@ -588,7 +803,14 @@ export default function ProjectDetailPage() {
         setJobs(data.jobs ?? []);
       } catch {}
     };
-    const interval = setInterval(() => { silentRefreshBacklog(); silentRefreshJobs(); }, 5000);
+    const silentRefreshAudits = async () => {
+      try {
+        const res = await fetch(`/api/audits?project=${encodeURIComponent(id)}`);
+        const data = await res.json() as { audits?: AuditReport[]; error?: string };
+        setAuditReports(data.audits ?? []);
+      } catch {}
+    };
+    const interval = setInterval(() => { silentRefreshBacklog(); silentRefreshJobs(); silentRefreshAudits(); }, 5000);
     return () => clearInterval(interval);
   }, [fetchProject, fetchBacklog, fetchBrief, fetchSprints, fetchJobs, id]);
 
@@ -716,6 +938,23 @@ export default function ProjectDetailPage() {
     });
     const data = await res.json() as { sprints: Sprint[] };
     setSprints(data.sprints);
+  };
+
+  const handleProjectPriorityChange = async (newPriority: "high" | "medium" | "low") => {
+    setPriorityDropdownOpen(false);
+    setPrioritySaving(true);
+    try {
+      await fetch("/api/project/" + id + "/priority", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priority: newPriority }),
+      });
+      setProject((p) => p ? { ...p, priority: newPriority } : p);
+    } catch (e) {
+      console.error("priority update failed", e);
+    } finally {
+      setPrioritySaving(false);
+    }
   };
 
   const handleStatusChange = async (newStatus: string) => {
@@ -848,6 +1087,59 @@ export default function ProjectDetailPage() {
                 )}
               </div>
             )}
+            {project && (
+              <div ref={priorityDropdownRef} style={{ position: 'relative' }}>
+                <button
+                  onClick={() => setPriorityDropdownOpen((o) => !o)}
+                  disabled={prioritySaving}
+                  style={{
+                    fontSize: '10px', fontWeight: 700, padding: '3px 9px', borderRadius: '20px',
+                    background: (project.priority || 'medium') === 'high' ? 'rgba(239,68,68,0.12)' : (project.priority || 'medium') === 'low' ? 'rgba(100,116,139,0.12)' : 'rgba(251,191,36,0.12)',
+                    color: (project.priority || 'medium') === 'high' ? '#f87171' : (project.priority || 'medium') === 'low' ? '#94a3b8' : '#fbbf24',
+                    border: `1px solid ${(project.priority || 'medium') === 'high' ? 'rgba(239,68,68,0.25)' : (project.priority || 'medium') === 'low' ? 'rgba(100,116,139,0.2)' : 'rgba(251,191,36,0.25)'}`,
+                    textTransform: 'uppercase', letterSpacing: '0.05em',
+                    cursor: prioritySaving ? 'not-allowed' : 'pointer',
+                    fontFamily: 'inherit', transition: 'all 150ms',
+                    display: 'inline-flex', alignItems: 'center', gap: '4px',
+                  }}
+                >
+                  {(project.priority || 'medium') === 'high' ? '\u2191' : (project.priority || 'medium') === 'low' ? '\u2193' : '\u2194'} {project.priority || 'medium'}
+                </button>
+                {priorityDropdownOpen && (
+                  <div style={{
+                    position: 'absolute', top: 'calc(100% + 6px)', left: 0,
+                    background: '#0f0f1a', border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: '10px', padding: '4px', zIndex: 100,
+                    minWidth: '100px', boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+                  }}>
+                    {(['high', 'medium', 'low'] as const).map((pr) => {
+                      const colors: Record<string, string> = { high: '#f87171', medium: '#fbbf24', low: '#94a3b8' };
+                      const isCurrent = (project.priority || 'medium') === pr;
+                      return (
+                        <button
+                          key={pr}
+                          onClick={() => handleProjectPriorityChange(pr)}
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: '7px',
+                            width: '100%', padding: '7px 10px', borderRadius: '7px',
+                            background: isCurrent ? 'rgba(255,255,255,0.06)' : 'transparent',
+                            border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                            fontSize: '12px', fontWeight: 600,
+                            color: isCurrent ? colors[pr] : '#64748b',
+                            textAlign: 'left', transition: 'all 100ms',
+                          }}
+                          onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => { if (!isCurrent) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
+                          onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => { if (!isCurrent) e.currentTarget.style.background = 'transparent'; }}
+                        >
+                          <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: colors[pr], flexShrink: 0 }} />
+                          {pr.charAt(0).toUpperCase() + pr.slice(1)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <button
             onClick={fetchBacklog}
@@ -867,7 +1159,10 @@ export default function ProjectDetailPage() {
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, padding: '28px 32px', display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '900px' }}>
+        <div style={{ flex: 1, padding: '28px 32px', display: 'grid', gridTemplateColumns: '1fr 400px', gap: '24px', alignItems: 'start' }}>
+
+          {/* === LEFT COLUMN === */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
           {/* Project info card */}
           {project && (
@@ -938,6 +1233,14 @@ export default function ProjectDetailPage() {
                         {project.git.remote.replace('https://github.com/', '')}
                       </a>
                     )}
+                    {project.urls && Object.keys(project.urls).length > 0 && Object.entries(project.urls).map(([label, url]) => (
+                      <a key={label} href={String(url)} target="_blank" rel="noopener noreferrer" style={{
+                        display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10,
+                        color: "#67e8f9", textDecoration: "none",
+                        padding: "2px 6px", borderRadius: 4,
+                        background: "rgba(6,182,212,0.08)",
+                      }}>{label}</a>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -949,6 +1252,41 @@ export default function ProjectDetailPage() {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
               <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Brief</h2>
               {!briefEditing && (
+                <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  onClick={async () => {
+                    try { await navigator.clipboard.writeText(brief); const b = document.querySelector('[data-brief-copy]'); if (b) { b.textContent = 'Copied!'; setTimeout(() => { b.textContent = 'Copy'; }, 1500); } } catch {}
+                  }}
+                  data-brief-copy
+                  style={{
+                    background: 'none', border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer',
+                    color: '#475569', padding: '4px 10px', borderRadius: '6px',
+                    display: 'flex', alignItems: 'center', gap: '4px',
+                    fontSize: '11px', transition: 'all 150ms',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#67e8f9')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = '#475569')}
+                >
+                  Copy
+                </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      const text = await navigator.clipboard.readText();
+                      if (text.trim()) { setBriefDraft(text); setBriefEditing(true); }
+                    } catch {}
+                  }}
+                  style={{
+                    background: 'none', border: '1px solid rgba(255,255,255,0.08)', cursor: 'pointer',
+                    color: '#475569', padding: '4px 10px', borderRadius: '6px',
+                    display: 'flex', alignItems: 'center', gap: '4px',
+                    fontSize: '11px', transition: 'all 150ms',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = '#fbbf24')}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = '#475569')}
+                >
+                  Paste
+                </button>
                 <button
                   onClick={() => { setBriefDraft(brief); setBriefEditing(true); }}
                   style={{
@@ -963,6 +1301,7 @@ export default function ProjectDetailPage() {
                   <Pencil size={13} />
                   Edit
                 </button>
+                </div>
               )}
             </div>
 
@@ -995,20 +1334,110 @@ export default function ProjectDetailPage() {
                 </div>
               </div>
             ) : (
-              <div style={{
-                fontSize: '13px', lineHeight: 1.7, color: brief ? '#cbd5e1' : '#334155',
-                whiteSpace: 'pre-wrap',
-              }}>
-                {brief || 'No brief yet — click edit to add one.'}
-              </div>
+              <div
+                className="md-preview"
+                style={{ fontSize: '13px', lineHeight: 1.8, color: '#cbd5e1' }}
+                dangerouslySetInnerHTML={{ __html: marked.parse(brief || 'No brief yet.') as string }}
+              />
             )}
           </div>
 
+          
+
+          {/* Backlog */}
+          <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Backlog</h2>
+                
+                {saving && <Loader2 size={13} color="#a78bfa" className="animate-spin" />}
+              </div>
+              <div style={{ display: 'flex', gap: '12px', fontSize: '12px', color: '#475569' }}>
+                <span>{open.length} open</span>
+                <span>{done.length} done</span>
+              </div>
+            </div>
+
+            {error && (
+              <div style={{
+                background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
+                borderRadius: '8px', padding: '10px 12px', marginBottom: '16px',
+                fontSize: '12px', color: '#f87171',
+              }}>
+                {error}
+              </div>
+            )}
+
+            {/* Add item */}
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
+              <input
+                type="text"
+                value={newItemText}
+                onChange={(e) => setNewItemText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleAddItem()}
+                placeholder="Add a new backlog item…"
+                style={{
+                  flex: 1, fontSize: '13px', padding: '9px 12px',
+                  background: 'rgba(255,255,255,0.04)',
+                  border: `1px solid ${backlogListening ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'}`,
+                  borderRadius: '10px', color: '#e2e8f0',
+                  outline: 'none', fontFamily: 'inherit',
+                  transition: 'border-color 150ms',
+                }}
+                onFocus={(e) => { if (!backlogListening) e.currentTarget.style.borderColor = 'rgba(124,58,237,0.5)'; }}
+                onBlur={(e) => { if (!backlogListening) e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; }}
+              />
+              <button
+                onClick={toggleBacklogVoice}
+                title={backlogListening ? 'Stop recording' : 'Dictate backlog item'}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  width: '38px', borderRadius: '10px',
+                  background: backlogListening ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.04)',
+                  border: backlogListening ? '1px solid rgba(239,68,68,0.35)' : '1px solid rgba(255,255,255,0.1)',
+                  color: backlogListening ? '#f87171' : '#64748b',
+                  cursor: 'pointer', transition: 'all 150ms', fontFamily: 'inherit', flexShrink: 0,
+                }}
+              >
+                <Mic size={14} className={backlogListening ? 'animate-pulse' : ''} />
+              </button>
+              <button
+                onClick={handleAddItem}
+                disabled={saving || !newItemText.trim()}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  padding: '9px 16px', borderRadius: '10px',
+                  background: 'rgba(124,58,237,0.15)',
+                  border: '1px solid rgba(124,58,237,0.3)',
+                  color: '#a78bfa', fontSize: '13px', fontWeight: 600,
+                  cursor: (saving || !newItemText.trim()) ? 'not-allowed' : 'pointer',
+                  opacity: (saving || !newItemText.trim()) ? 0.5 : 1,
+                  transition: 'all 150ms', fontFamily: 'inherit',
+                }}
+              >
+                <Plus size={14} />
+                Add Item
+              </button>
+              <button onClick={() => setSprintsOpen(v => !v)} style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                padding: '9px 14px', borderRadius: '10px',
+                background: sprintsOpen ? 'rgba(251,191,36,0.12)' : 'rgba(255,255,255,0.04)',
+                border: sprintsOpen ? '1px solid rgba(251,191,36,0.25)' : '1px solid rgba(255,255,255,0.1)',
+                color: sprintsOpen ? '#fbbf24' : '#64748b',
+                fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+              }}>Sprints</button>
+            </div>
+
+            {sprintsOpen && (
+          <>
           {/* Sprints */}
           <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Sprints</h2>
+                <button onClick={() => setSprintsOpen(v => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, padding: 0 }}>
+                  <span style={{ fontSize: 12, color: '#475569', transform: sprintsOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 150ms' }}>{String.fromCharCode(9654)}</span>
+                  <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Sprints</h2>
+                </button>
                 {sprintSaving && <Loader2 size={13} color="#a78bfa" className="animate-spin" />}
               </div>
               <div style={{ display: 'flex', gap: '10px', fontSize: '11px', color: '#475569' }}>
@@ -1083,7 +1512,7 @@ export default function ProjectDetailPage() {
               </div>
             </div>
 
-            {sprints.length === 0 ? (
+            {!sprintsOpen ? null : sprints.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '20px 0', color: '#334155', fontSize: '13px' }}>
                 No sprints yet. Add one above.
               </div>
@@ -1100,81 +1529,9 @@ export default function ProjectDetailPage() {
               </div>
             )}
           </div>
+          </>
+          )}
 
-          {/* Backlog */}
-          <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Backlog</h2>
-                {saving && <Loader2 size={13} color="#a78bfa" className="animate-spin" />}
-              </div>
-              <div style={{ display: 'flex', gap: '12px', fontSize: '12px', color: '#475569' }}>
-                <span>{open.length} open</span>
-                <span>{done.length} done</span>
-              </div>
-            </div>
-
-            {error && (
-              <div style={{
-                background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
-                borderRadius: '8px', padding: '10px 12px', marginBottom: '16px',
-                fontSize: '12px', color: '#f87171',
-              }}>
-                {error}
-              </div>
-            )}
-
-            {/* Add item */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
-              <input
-                type="text"
-                value={newItemText}
-                onChange={(e) => setNewItemText(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleAddItem()}
-                placeholder="Add a new backlog item…"
-                style={{
-                  flex: 1, fontSize: '13px', padding: '9px 12px',
-                  background: 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${backlogListening ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.1)'}`,
-                  borderRadius: '10px', color: '#e2e8f0',
-                  outline: 'none', fontFamily: 'inherit',
-                  transition: 'border-color 150ms',
-                }}
-                onFocus={(e) => { if (!backlogListening) e.currentTarget.style.borderColor = 'rgba(124,58,237,0.5)'; }}
-                onBlur={(e) => { if (!backlogListening) e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; }}
-              />
-              <button
-                onClick={toggleBacklogVoice}
-                title={backlogListening ? 'Stop recording' : 'Dictate backlog item'}
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  width: '38px', borderRadius: '10px',
-                  background: backlogListening ? 'rgba(239,68,68,0.15)' : 'rgba(255,255,255,0.04)',
-                  border: backlogListening ? '1px solid rgba(239,68,68,0.35)' : '1px solid rgba(255,255,255,0.1)',
-                  color: backlogListening ? '#f87171' : '#64748b',
-                  cursor: 'pointer', transition: 'all 150ms', fontFamily: 'inherit', flexShrink: 0,
-                }}
-              >
-                <Mic size={14} className={backlogListening ? 'animate-pulse' : ''} />
-              </button>
-              <button
-                onClick={handleAddItem}
-                disabled={saving || !newItemText.trim()}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: '6px',
-                  padding: '9px 16px', borderRadius: '10px',
-                  background: 'rgba(124,58,237,0.15)',
-                  border: '1px solid rgba(124,58,237,0.3)',
-                  color: '#a78bfa', fontSize: '13px', fontWeight: 600,
-                  cursor: (saving || !newItemText.trim()) ? 'not-allowed' : 'pointer',
-                  opacity: (saving || !newItemText.trim()) ? 0.5 : 1,
-                  transition: 'all 150ms', fontFamily: 'inherit',
-                }}
-              >
-                <Plus size={14} />
-                Add Item
-              </button>
-            </div>
 
             {loadingBacklog ? (
               <div style={{ textAlign: 'center', padding: '24px 0', color: '#334155', fontSize: '13px' }}>
@@ -1186,13 +1543,37 @@ export default function ProjectDetailPage() {
               </div>
             ) : sections.length > 0 ? (
               <div>
-                {sections.map((section, si) => {
+                {sections.filter(sec => sec.items.length > 0).map((section, si) => {
                   const sOpen = section.items.filter((i) => !i.checked);
                   const sDone = section.items.filter((i) => i.checked);
+
+                  // Compute audit status for this sprint section
+                  const sprintAudits = section.header
+                    ? auditReports.filter((r) => r.sprint === section.header)
+                    : [];
+                  const sprintAuditStatus: AuditStatus = sprintAudits.length === 0
+                    ? null
+                    : sprintAudits.some((r) => r.status === 'fail')    ? 'fail'
+                    : sprintAudits.some((r) => r.status === 'partial') ? 'partial'
+                    : 'pass';
+
+                  // Match item to audit record by **S-ID** or full text
+                  const getItemAuditStatus = (text: string): AuditStatus => {
+                    if (sprintAudits.length === 0) return null;
+                    const idMatch = text.match(/\*\*([A-Z][A-Z0-9-]+)\*\*/)?.[1] ?? text;
+                    const rec = sprintAudits.find((r) => r.item_id === idMatch || r.item_id === text);
+                    return rec?.status ?? null;
+                  };
+
                   return (
                     <div key={si} style={{ marginBottom: si < sections.length - 1 ? '20px' : 0 }}>
                       {section.header !== null && (
-                        <BacklogHeader header={section.header} level={section.level} />
+                        <BacklogHeader
+                          header={section.header}
+                          level={section.level}
+                          auditStatus={sprintAuditStatus}
+                          onAuditClick={() => setAuditModal({ sprint: section.header!, reports: sprintAudits })}
+                        />
                       )}
                       {sOpen.length > 0 && (
                         <div style={{ marginBottom: sDone.length > 0 ? '10px' : 0 }}>
@@ -1207,6 +1588,7 @@ export default function ProjectDetailPage() {
                               onEdit={handleEdit}
                               onPriorityChange={handlePriorityChange}
                               saving={saving}
+                              auditStatus={getItemAuditStatus(item.text)}
                             />
                           ))}
                         </div>
@@ -1224,6 +1606,7 @@ export default function ProjectDetailPage() {
                               onEdit={handleEdit}
                               onPriorityChange={handlePriorityChange}
                               saving={saving}
+                              auditStatus={getItemAuditStatus(item.text)}
                             />
                           ))}
                         </div>
@@ -1253,6 +1636,7 @@ export default function ProjectDetailPage() {
                         onEdit={handleEdit}
                         onPriorityChange={handlePriorityChange}
                         saving={saving}
+                        auditStatus={null}
                       />
                     ))}
                   </div>
@@ -1270,6 +1654,7 @@ export default function ProjectDetailPage() {
                         onEdit={handleEdit}
                         onPriorityChange={handlePriorityChange}
                         saving={saving}
+                        auditStatus={null}
                       />
                     ))}
                   </div>
@@ -1278,15 +1663,21 @@ export default function ProjectDetailPage() {
             )}
           </div>
 
+          </div>
+
+          {/* === RIGHT COLUMN === */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', position: 'sticky', top: '100px' }}>
+
           {/* Job History */}
-          <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+          <div className="glass" style={{ borderRadius: '16px', padding: '20px', maxHeight: '600px', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexShrink: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <h2 style={{ fontSize: '15px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Job History</h2>
                 {loadingJobs && <Loader2 size={13} color="#a78bfa" className="animate-spin" />}
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <span style={{ fontSize: '11px', color: '#475569' }}>{jobs.length} job{jobs.length !== 1 ? 's' : ''}</span>
+                <div style={{ display: "flex", gap: 3 }}>                  {(["all", "running", "done", "failed"] as const).map(f => (                    <button key={f} onClick={() => setJobFilter(f)} style={{                      padding: "2px 7px", borderRadius: 5, fontSize: 10, fontWeight: 600,                      background: jobFilter === f ? "rgba(124,58,237,0.15)" : "none",                      color: jobFilter === f ? "#a78bfa" : "#475569",                      border: jobFilter === f ? "1px solid rgba(124,58,237,0.3)" : "1px solid transparent",                      cursor: "pointer", textTransform: "capitalize",                    }}>{f}</button>                  ))}                </div>
                 <button
                   onClick={fetchJobs}
                   disabled={loadingJobs}
@@ -1314,8 +1705,8 @@ export default function ProjectDetailPage() {
                 No jobs found for this project.
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                {jobs.map((job) => {
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', overflowY: 'auto', flex: 1 }}>
+                {jobs.filter(j => jobFilter === 'all' || (jobFilter === 'running' ? (j.status === 'running' || j.status === 'in_progress') : jobFilter === 'done' ? (j.status === 'done' || j.status === 'completed') : (j.status === 'error' || j.status === 'failed'))).slice(0, 30).map((job) => {
                   const isDone = job.status === 'done' || job.status === 'completed';
                   const isRunning = job.status === 'running' || job.status === 'in_progress';
                   const isError = !isDone && !isRunning;
@@ -1362,7 +1753,7 @@ export default function ProjectDetailPage() {
                           WebkitBoxOrient: 'vertical', overflow: 'hidden',
                           marginBottom: '5px',
                         }}>
-                          {job.goal ?? '(no goal)'}
+                          {(() => { const g = job.goal ?? '(no goal)'; const m = g.match(/TASK:\s*(.+)/); return m ? m[1].trim() : g; })()}
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                           <code style={{
@@ -1395,15 +1786,51 @@ export default function ProjectDetailPage() {
             )}
           </div>
 
+          <BrainstormPanel projectId={id} />
+          <FilesPanel projectId={id} />
+
         </div>
 
-        <LeadsPanel projectId={id} />
+        </div>
+
+        {/* Full-width section below the 2-column grid */}
+        <div style={{ padding: '0 32px 32px' }}>
+          <LeadsPanel projectId={id} />
+        </div>
       </main>
 
       <style>{`
+        .md-preview h1 { font-size: 22px; font-weight: 700; color: #f1f5f9; margin: 0 0 12px; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 8px; }
+        .md-preview h2 { font-size: 18px; font-weight: 600; color: #e2e8f0; margin: 20px 0 8px; }
+        .md-preview h3 { font-size: 15px; font-weight: 600; color: #cbd5e1; margin: 16px 0 6px; }
+        .md-preview p { margin: 0 0 12px; }
+        .md-preview ul, .md-preview ol { margin: 0 0 12px; padding-left: 20px; }
+        .md-preview li { margin-bottom: 4px; }
+        .md-preview code { background: rgba(124,58,237,0.15); color: #c4b5fd; padding: 1px 5px; border-radius: 4px; font-size: 12px; font-family: monospace; }
+        .md-preview pre { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px; overflow-x: auto; margin: 0 0 14px; }
+        .md-preview pre code { background: none; padding: 0; color: #94a3b8; }
+        .md-preview blockquote { border-left: 3px solid rgba(124,58,237,0.5); margin: 0 0 12px; padding: 4px 14px; color: #64748b; }
+        .md-preview a { color: #67e8f9; }
+        .md-preview hr { border: none; border-top: 1px solid rgba(255,255,255,0.08); margin: 16px 0; }
+        .md-preview strong { color: #f1f5f9; font-weight: 700; }
+        .md-preview em { color: #94a3b8; }
+        .md-preview table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 13px; }
+        .md-preview th { background: rgba(255,255,255,0.04); color: #94a3b8; padding: 8px 12px; text-align: left; border: 1px solid rgba(255,255,255,0.08); }
+        .md-preview td { padding: 7px 12px; border: 1px solid rgba(255,255,255,0.06); color: #cbd5e1; }
+        @media (max-width: 1024px) {
+          main > div { grid-template-columns: 1fr !important; }
+        }
         .edit-btn { opacity: 0 !important; }
         div:hover > .edit-btn, div:focus-within > .edit-btn { opacity: 1 !important; }
       `}</style>
+
+      {auditModal && (
+        <AuditModal
+          sprint={auditModal.sprint}
+          reports={auditModal.reports}
+          onClose={() => setAuditModal(null)}
+        />
+      )}
     </div>
   );
 }
