@@ -106,6 +106,16 @@ db.exec(`
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending','pass','fail')),
     sort_order INTEGER NOT NULL DEFAULT 0
   );
+
+  CREATE TABLE IF NOT EXISTS audit_reports (
+    id TEXT PRIMARY KEY,
+    project TEXT NOT NULL,
+    sprint TEXT,
+    item_id TEXT,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','pass','partial','fail')),
+    detail TEXT,
+    created_at INTEGER DEFAULT (unixepoch() * 1000)
+  );
 `);
 
 // Prepared statements
@@ -549,13 +559,16 @@ function parseBacklog(content) {
     const line = lines[i];
     const checked = /^- \[x\]/i.test(line);
     const unchecked = /^- \[ \]/.test(line);
-    if (!checked && !unchecked) continue;
+    const inProgress = /^- \[~\]/.test(line);
+    const blocked = /^- \[!\]/.test(line);
+    if (!checked && !unchecked && !inProgress && !blocked) continue;
     let text = line.replace(/^- \[.\]\s*/, '').replace(/\s*\(job:[^)]+\)/, '').trim();
     const priorityMatch = text.match(/^\[(P[123])\]\s*/);
     const priority = priorityMatch ? priorityMatch[1] : null;
     if (priorityMatch) text = text.slice(priorityMatch[0].length);
     const { acceptanceCriteria, branch } = extractSubLines(lines, i);
-    items.push({ index: idx++, lineIndex: i, text, checked, priority, acceptanceCriteria, branch });
+    const status = inProgress ? 'in_progress' : blocked ? 'blocked' : checked ? 'done' : 'todo';
+    items.push({ index: idx++, lineIndex: i, text, checked, priority, status, acceptanceCriteria, branch });
   }
   return items;
 }
@@ -2494,6 +2507,20 @@ app.patch("/api/backlogs/:projectId/ac/:id", (req, res) => {
 });
 
 // ── Backlog migration from markdown ──────────────────────────────────────────
+
+// ── Audits ──────────────────────────────────────────────────────────────────
+app.get("/api/audits", (req, res) => {
+  const project = req.query.project;
+  try {
+    const rows = project
+      ? db.prepare("SELECT * FROM audit_reports WHERE project = ? ORDER BY created_at DESC").all(project)
+      : db.prepare("SELECT * FROM audit_reports ORDER BY created_at DESC LIMIT 200").all();
+    res.json({ audits: rows });
+  } catch (err) {
+    res.json({ audits: [] });
+  }
+});
+
 app.post("/api/backlogs/migrate", (_req, res) => {
   try {
     const migrated = migrateAllBacklogs();
@@ -2503,10 +2530,58 @@ app.post("/api/backlogs/migrate", (_req, res) => {
   }
 });
 
+function backfillACs(projectId, backlogPath) {
+  const content = fs.readFileSync(backlogPath, "utf-8");
+  const lines = content.split("\n");
+  let acCount = 0;
+
+  // Get all items for this project keyed by external_id and text
+  const items = db.prepare(
+    `SELECT i.id, i.external_id, i.text FROM backlog_items i
+     JOIN backlog_sprints s ON i.sprint_id = s.id
+     WHERE s.project_id = ?`
+  ).all(projectId);
+
+  const byExtId = {};
+  for (const item of items) {
+    if (item.external_id) byExtId[item.external_id] = item.id;
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const itemMatch = line.match(/^- \[([x ~!])\]\s*(.+)$/i);
+    if (!itemMatch) continue;
+
+    const itemText = itemMatch[2].trim();
+    const extIdMatch = itemText.match(/\*\*([A-Z]\d+-\d+)\*\*/);
+    const externalId = extIdMatch ? extIdMatch[1] : null;
+
+    // Find the matching DB item
+    let dbItemId = externalId ? byExtId[externalId] : null;
+    if (!dbItemId) {
+      // Fallback: match by text similarity (strip job refs, priority tags)
+      const cleanText = itemText.replace(/\s*\(job:[^)]+\)\s*/g, "").trim();
+      const found = items.find(it => it.text === cleanText || cleanText.includes(it.text) || it.text.includes(cleanText));
+      if (found) dbItemId = found.id;
+    }
+    if (!dbItemId) continue;
+
+    const { acceptanceCriteria } = extractSubLines(lines, i);
+    let acOrder = 0;
+    for (const acText of acceptanceCriteria) {
+      db.prepare(
+        "INSERT INTO backlog_acceptance_criteria (id, item_id, text, sort_order) VALUES (?, ?, ?, ?)"
+      ).run(randomUUID(), dbItemId, acText, acOrder++);
+      acCount++;
+    }
+  }
+  return acCount;
+}
+
 function migrateAllBacklogs() {
   const results = [];
   const projectDirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
-    .filter(d => d.isDirectory() && !d.name.startsWith('.') && !d.name.startsWith('_'));
+    .filter(d => (d.isDirectory() || d.isSymbolicLink()) && !d.name.startsWith('.') && !d.name.startsWith('_'));
 
   const migrateOne = db.transaction((projectId) => {
     const backlogPath = path.join(PROJECTS_DIR, projectId, "backlog.md");
@@ -2514,7 +2589,20 @@ function migrateAllBacklogs() {
 
     // Skip if already migrated (has sprints for this project)
     const existing = db.prepare("SELECT COUNT(*) as cnt FROM backlog_sprints WHERE project_id = ?").get(projectId);
-    if (existing.cnt > 0) return { project: projectId, skipped: true, reason: "already migrated" };
+    if (existing.cnt > 0) {
+      // Backfill ACs if items exist but have no acceptance criteria
+      const acExists = db.prepare(
+        `SELECT COUNT(*) as cnt FROM backlog_acceptance_criteria ac
+         JOIN backlog_items i ON ac.item_id = i.id
+         JOIN backlog_sprints s ON i.sprint_id = s.id
+         WHERE s.project_id = ?`
+      ).get(projectId);
+      if (acExists.cnt === 0) {
+        const backfilled = backfillACs(projectId, backlogPath);
+        if (backfilled > 0) return { project: projectId, skipped: false, reason: "backfilled ACs", acs: backfilled };
+      }
+      return { project: projectId, skipped: true, reason: "already migrated" };
+    }
 
     const content = fs.readFileSync(backlogPath, "utf-8");
     const lines = content.split("\n");
@@ -2664,7 +2752,7 @@ app.get("/api/backlogs/:projectId/full", (req, res) => {
         checked: item.status === "done",
         status: item.status,
         priority: item.priority,
-        acceptanceCriteria: acs.map(ac => ac.text),
+        acceptanceCriteria: acs.map(ac => ({ id: ac.id, text: ac.text, status: ac.status })),
         branch: item.branch,
         external_id: item.external_id,
         sprint_id: item.sprint_id,

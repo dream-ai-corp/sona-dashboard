@@ -52,6 +52,12 @@ interface Project {
   priority?: 'high' | 'medium' | 'low';
 }
 
+interface AcceptanceCriterion {
+  id: string;
+  text: string;
+  status: 'pending' | 'pass' | 'fail';
+}
+
 interface BacklogItem {
   id?: string;
   index: number;
@@ -60,7 +66,7 @@ interface BacklogItem {
   checked: boolean;
   status?: 'todo' | 'in_progress' | 'blocked' | 'done';
   priority: 'P1' | 'P2' | 'P3' | null;
-  acceptanceCriteria?: string[];
+  acceptanceCriteria?: AcceptanceCriterion[];
   branch?: string | null;
   external_id?: string | null;
   sprint_id?: string;
@@ -317,6 +323,7 @@ function BacklogHeader({
   sprintStatus,
   sprintPriority,
   onSprintAction,
+  onSprintPriorityCycle,
 }: {
   header: string;
   level: number;
@@ -325,6 +332,7 @@ function BacklogHeader({
   sprintStatus?: 'planning' | 'active' | 'paused' | 'done';
   sprintPriority?: 'high' | 'medium' | 'low';
   onSprintAction?: (action: 'active' | 'paused' | 'planning') => void;
+  onSprintPriorityCycle?: () => void;
 }) {
   const chip = auditChipStyle(auditStatus);
   const prioBadge = sprintPriorityBadge(sprintPriority);
@@ -362,14 +370,20 @@ function BacklogHeader({
         {header}
       </span>
       {sprintPriority && (
-        <span style={{
-          fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '10px',
-          background: prioBadge.bg, color: prioBadge.color,
-          border: `1px solid ${prioBadge.border}`,
-          textTransform: 'uppercase', letterSpacing: '0.06em',
-        }}>
+        <button
+          onClick={onSprintPriorityCycle}
+          title="Click to cycle priority: high / medium / low"
+          data-testid="sprint-priority-badge"
+          style={{
+            fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '10px',
+            background: prioBadge.bg, color: prioBadge.color,
+            border: `1px solid ${prioBadge.border}`,
+            textTransform: 'uppercase', letterSpacing: '0.06em',
+            cursor: 'pointer', fontFamily: 'inherit', transition: 'all 150ms',
+          }}
+        >
           {sprintPriority}
-        </span>
+        </button>
       )}
       {sprintStatus && (
         <span style={{
@@ -486,8 +500,8 @@ function BacklogItemRow({
     <div
       style={{
         padding: '10px 12px', borderRadius: '10px',
-        background: item.checked ? 'rgba(255,255,255,0.01)' : 'rgba(255,255,255,0.025)',
-        border: `1px solid ${item.checked ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.07)'}`,
+        background: item.status === 'in_progress' ? 'rgba(6,182,212,0.04)' : item.status === 'blocked' ? 'rgba(239,68,68,0.04)' : item.checked ? 'rgba(255,255,255,0.01)' : 'rgba(255,255,255,0.025)',
+        border: `1px solid ${item.status === 'in_progress' ? 'rgba(6,182,212,0.2)' : item.status === 'blocked' ? 'rgba(239,68,68,0.2)' : item.checked ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.07)'}`,
         marginBottom: '6px', transition: 'all 150ms ease',
       }}
     >
@@ -579,16 +593,21 @@ function BacklogItemRow({
       {/* Acceptance Criteria & Branch (shown only when not editing) */}
       {!editing && (hasAC || hasBranch) && (
         <div style={{ paddingLeft: '16px', marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-          {item.acceptanceCriteria?.map((ac, i) => (
-            <div
-              key={i}
-              data-testid="ac-item"
-              style={{ display: 'flex', alignItems: 'flex-start', gap: '5px' }}
-            >
-              <CircleCheck size={11} color="#64748b" style={{ flexShrink: 0, marginTop: '2px' }} />
-              <span style={{ fontSize: '11px', color: '#64748b', lineHeight: 1.5 }}>{ac}</span>
-            </div>
-          ))}
+          {item.acceptanceCriteria?.map((ac, i) => {
+            const acText = typeof ac === 'string' ? ac : ac.text;
+            const acStatus = typeof ac === 'string' ? 'pending' : ac.status;
+            const acColor = acStatus === 'pass' ? '#4ade80' : acStatus === 'fail' ? '#f87171' : '#64748b';
+            return (
+              <div
+                key={typeof ac === 'string' ? i : ac.id}
+                data-testid="ac-item"
+                style={{ display: 'flex', alignItems: 'flex-start', gap: '5px' }}
+              >
+                <CircleCheck size={11} color={acColor} style={{ flexShrink: 0, marginTop: '2px' }} />
+                <span style={{ fontSize: '11px', color: '#64748b', lineHeight: 1.5 }}>{acText}</span>
+              </div>
+            );
+          })}
           {item.branch && (
             <div style={{ marginTop: hasBranch && hasAC ? '2px' : 0 }}>
               <code
@@ -1037,6 +1056,25 @@ export default function ProjectDetailPage() {
         if (data.items) setItems(data.items);
         if (data.sections) setSections(data.sections);
       }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSprintPriorityCycle = async (sprintId: string, currentPriority: string) => {
+    const cycle: Record<string, string> = { high: 'medium', medium: 'low', low: 'high' };
+    const next = cycle[currentPriority] || 'medium';
+    setSaving(true);
+    try {
+      await fetch(
+        `/api/backlogs/${encodeURIComponent(id)}/sprints/${sprintId}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ priority: next }),
+        },
+      );
+      await fetchBacklog();
     } finally {
       setSaving(false);
     }
@@ -1780,6 +1818,7 @@ export default function ProjectDetailPage() {
                           sprintStatus={section.sprint_status}
                           sprintPriority={section.sprint_priority}
                           onSprintAction={section.sprint_id ? (action) => handleSprintAction(section.sprint_id!, action) : undefined}
+                          onSprintPriorityCycle={section.sprint_id ? () => handleSprintPriorityCycle(section.sprint_id!, section.sprint_priority ?? 'medium') : undefined}
                         />
                       )}
                       {sOpen.length > 0 && (
