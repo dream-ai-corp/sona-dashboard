@@ -33,6 +33,7 @@ export default function SonaFloatingChat() {
 
   // Continuous mode
   const [continuousMode, setContinuousMode] = useState(false);
+  const [micMuted, setMicMuted] = useState(false);
   const continuousModeRef = useRef(false);
   const [queueSize, setQueueSize] = useState(0);
 
@@ -60,6 +61,8 @@ export default function SonaFloatingChat() {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) setMicSupported(false);
   }, []);
   useEffect(() => { continuousModeRef.current = continuousMode; }, [continuousMode]);
+
+  useEffect(() => { const t = streamRef.current?.getAudioTracks()[0]; if (t) t.enabled = !micMuted; }, [micMuted]);
 
 
   // ─── Device enumeration + change detection ────────────────────────
@@ -573,6 +576,17 @@ export default function SonaFloatingChat() {
             <input type="text" value={text} disabled={busy || recording} onChange={e => setText(e.target.value)} onKeyDown={onKey}
               placeholder={continuousMode ? '🔴 Live — speak freely' : recording ? '● Recording' : status === 'sending' ? 'Sending…' : status === 'playing' ? '♫ Speaking…' : 'Type, attach, or talk…'}
               style={{ flex: 1, minWidth: 0, padding: '9px 12px', background: 'rgba(15,15,26,0.8)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '18px', color: '#e2e8f0', fontSize: '13px', fontFamily: 'inherit', outline: 'none' }} />
+
+            {/* Mute mic */}
+            {(continuousMode || recording) && (
+              <button onClick={() => setMicMuted(m => !m)} title={micMuted ? 'Unmute' : 'Mute'} style={{
+                width: '36px', height: '36px', borderRadius: '18px',
+                background: micMuted ? 'rgba(239,68,68,0.18)' : 'rgba(255,255,255,0.03)',
+                border: '1px solid ' + (micMuted ? '#ef4444' : 'rgba(255,255,255,0.08)'),
+                color: micMuted ? '#f87171' : '#94a3b8', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}><MicOff size={15} /></button>
+            )}
 
             {/* Continuous toggle */}
             {micSupported && (
