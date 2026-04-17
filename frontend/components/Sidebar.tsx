@@ -20,6 +20,7 @@ import {
   Activity,
   MessageSquare,
   Repeat2,
+  Layers,
 } from 'lucide-react';
 
 const navItems = [
@@ -28,6 +29,7 @@ const navItems = [
   { icon: Briefcase,       label: 'Jobs',           route: '/jobs' },
   { icon: Activity,        label: 'Activity',       route: '/activity' },
   { icon: MessageSquare,   label: 'Conversations',  route: '/conversations' },
+  { icon: Layers,          label: 'Média',          route: '/media' },
   { icon: Cpu,             label: 'System',         route: '/system' },
   { icon: Brain,           label: 'Memory',         route: '/memory' },
   { icon: FolderKanban,    label: 'Projects',       route: '/projects' },

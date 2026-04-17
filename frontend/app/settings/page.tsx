@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import PageShell from '@/components/PageShell';
 import QRCode from 'react-qr-code';
 import {
@@ -12,11 +12,17 @@ import {
   Volume2,
   RefreshCw,
   QrCode,
+  Image,
+  Video,
+  Music,
+  ArrowRight,
+  Info,
 } from 'lucide-react';
 
 const SONA_API = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:3011';
 
-type Tab = 'general' | 'connections';
+type Tab = 'general' | 'connections' | 'media';
 
 type WhatsAppStatus = 'CONNECTED' | 'QR_READY' | 'DISCONNECTED' | 'LOADING';
 
@@ -40,6 +46,29 @@ interface BrainState {
 interface VoiceState {
   current: { en: string; fr: string };
   available: { en: Array<{ key: string; label: string }>; fr: Array<{ key: string; label: string }> };
+}
+
+interface MediaSettings {
+  images: boolean;
+  video: boolean;
+  audio: boolean;
+}
+
+const MEDIA_STORAGE_KEY = 'sona_media_settings';
+
+function loadMediaSettings(): MediaSettings {
+  if (typeof window === 'undefined') return { images: false, video: false, audio: false };
+  try {
+    const raw = localStorage.getItem(MEDIA_STORAGE_KEY);
+    if (raw) return JSON.parse(raw) as MediaSettings;
+  } catch {}
+  return { images: false, video: false, audio: false };
+}
+
+function saveMediaSettings(s: MediaSettings) {
+  try {
+    localStorage.setItem(MEDIA_STORAGE_KEY, JSON.stringify(s));
+  } catch {}
 }
 
 function TabButton({
@@ -95,6 +124,244 @@ function StatusBadge({ status }: { status: WhatsAppStatus }) {
     >
       {s.label}
     </span>
+  );
+}
+
+function Toggle({
+  checked,
+  onChange,
+  disabled,
+  'data-testid': testId,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  'data-testid'?: string;
+}) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      data-testid={testId}
+      onClick={() => !disabled && onChange(!checked)}
+      disabled={disabled}
+      style={{
+        width: '44px',
+        height: '24px',
+        borderRadius: '12px',
+        border: 'none',
+        background: checked ? '#a78bfa' : 'rgba(255,255,255,0.12)',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        position: 'relative',
+        flexShrink: 0,
+        transition: 'background 200ms ease',
+        opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          top: '3px',
+          left: checked ? '23px' : '3px',
+          width: '18px',
+          height: '18px',
+          borderRadius: '50%',
+          background: '#fff',
+          transition: 'left 200ms ease',
+          boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
+        }}
+      />
+    </button>
+  );
+}
+
+interface MediaCardProps {
+  icon: ReactNode;
+  title: string;
+  description: string;
+  provider: string;
+  enabled: boolean;
+  onToggle: (v: boolean) => void;
+  onGoToConnections: () => void;
+  testId: string;
+}
+
+function MediaCard({
+  icon,
+  title,
+  description,
+  provider,
+  enabled,
+  onToggle,
+  onGoToConnections,
+  testId,
+}: MediaCardProps) {
+  return (
+    <div
+      className="glass"
+      style={{
+        borderRadius: '16px',
+        padding: '24px',
+        borderColor: enabled ? 'rgba(167,139,250,0.2)' : undefined,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+        {/* Icon */}
+        <div
+          style={{
+            width: '48px',
+            height: '48px',
+            borderRadius: '12px',
+            background: enabled ? 'rgba(124,58,237,0.15)' : 'rgba(255,255,255,0.04)',
+            border: `1px solid ${enabled ? 'rgba(167,139,250,0.3)' : 'rgba(255,255,255,0.08)'}`,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+            transition: 'all 200ms ease',
+          }}
+        >
+          {icon}
+        </div>
+
+        {/* Info */}
+        <div style={{ flex: 1, minWidth: '160px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+            <span style={{ fontSize: '15px', fontWeight: 600, color: '#f1f5f9' }}>{title}</span>
+            {enabled && (
+              <span
+                style={{
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  padding: '2px 8px',
+                  borderRadius: '20px',
+                  background: 'rgba(167,139,250,0.15)',
+                  color: '#a78bfa',
+                  border: '1px solid rgba(167,139,250,0.25)',
+                }}
+              >
+                Activé
+              </span>
+            )}
+          </div>
+          <p style={{ fontSize: '12px', color: '#64748b', margin: 0 }}>{description}</p>
+        </div>
+
+        {/* Toggle */}
+        <Toggle checked={enabled} onChange={onToggle} data-testid={testId} />
+      </div>
+
+      {/* Provider guide (shown when enabled) */}
+      {enabled && (
+        <div
+          data-testid={`${testId}-guide`}
+          style={{
+            marginTop: '16px',
+            padding: '14px 16px',
+            background: 'rgba(167,139,250,0.06)',
+            borderRadius: '10px',
+            border: '1px solid rgba(167,139,250,0.18)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '10px',
+            flexWrap: 'wrap',
+          }}
+        >
+          <Info size={14} color="#a78bfa" style={{ flexShrink: 0 }} />
+          <span style={{ fontSize: '12px', color: '#cbd5e1', flex: 1 }}>
+            Pour utiliser la génération {title.toLowerCase()}, configurez un provider{' '}
+            <strong style={{ color: '#e2e8f0' }}>{provider}</strong> dans l&apos;onglet Connexions.
+          </span>
+          <button
+            onClick={onGoToConnections}
+            data-testid={`${testId}-go-connections`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '6px 12px',
+              borderRadius: '8px',
+              border: '1px solid rgba(167,139,250,0.35)',
+              background: 'rgba(124,58,237,0.15)',
+              color: '#a78bfa',
+              fontSize: '12px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Onglet Connexions
+            <ArrowRight size={12} />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MediaTab({ onGoToConnections }: { onGoToConnections: () => void }) {
+  const [settings, setSettings] = useState<MediaSettings>({ images: false, video: false, audio: false });
+
+  useEffect(() => {
+    setSettings(loadMediaSettings());
+  }, []);
+
+  const update = useCallback((key: keyof MediaSettings, value: boolean) => {
+    setSettings((prev) => {
+      const next = { ...prev, [key]: value };
+      saveMediaSettings(next);
+      return next;
+    });
+  }, []);
+
+  const mediaItems = [
+    {
+      key: 'images' as const,
+      icon: <Image size={22} color={settings.images ? '#a78bfa' : '#64748b'} />,
+      title: 'Images',
+      description: "Génération d'images via IA (Replicate, DALL-E, Stability AI…)",
+      provider: 'Replicate / DALL-E',
+      testId: 'media-toggle-images',
+    },
+    {
+      key: 'video' as const,
+      icon: <Video size={22} color={settings.video ? '#a78bfa' : '#64748b'} />,
+      title: 'Vidéo',
+      description: 'Génération et édition de vidéos (Runway, Kling, HeyGen…)',
+      provider: 'Runway / Kling',
+      testId: 'media-toggle-video',
+    },
+    {
+      key: 'audio' as const,
+      icon: <Music size={22} color={settings.audio ? '#a78bfa' : '#64748b'} />,
+      title: 'Audio',
+      description: 'Génération audio, voix synthétisée et musique (ElevenLabs, Suno…)',
+      provider: 'ElevenLabs / Suno',
+      testId: 'media-toggle-audio',
+    },
+  ];
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <p style={{ fontSize: '13px', color: '#64748b', margin: 0 }}>
+        Activez les modules de génération multimédia. Chaque module nécessite un provider configuré dans l&apos;onglet Connexions.
+      </p>
+
+      {mediaItems.map((item) => (
+        <MediaCard
+          key={item.key}
+          icon={item.icon}
+          title={item.title}
+          description={item.description}
+          provider={item.provider}
+          enabled={settings[item.key]}
+          onToggle={(v) => update(item.key, v)}
+          onGoToConnections={onGoToConnections}
+          testId={item.testId}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -312,6 +579,239 @@ function GeneralTab() {
   );
 }
 
+type ProviderTestState = 'idle' | 'testing' | 'ok' | 'error';
+
+interface ProviderRowProps {
+  label: string;
+  provider: string;
+  placeholder: string;
+  initialValue: string;
+  onSaved: () => void;
+}
+
+function ProviderRow({ label, provider, placeholder, initialValue, onSaved }: ProviderRowProps) {
+  const [value, setValue] = useState(initialValue);
+  const [visible, setVisible] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testState, setTestState] = useState<ProviderTestState>('idle');
+  const [testMsg, setTestMsg] = useState('');
+
+  // Sync when parent re-fetches
+  useEffect(() => { setValue(initialValue); }, [initialValue]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await fetch(`${BACKEND_URL}/api/settings/providers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, api_key: value }),
+      });
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    setTestState('testing');
+    setTestMsg('');
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/settings/providers/${provider}/test`, {
+        method: 'POST',
+      });
+      const data = await res.json() as { ok: boolean; error?: string };
+      setTestState(data.ok ? 'ok' : 'error');
+      setTestMsg(data.ok ? 'Connexion réussie' : (data.error ?? 'Échec'));
+    } catch (e) {
+      setTestState('error');
+      setTestMsg(e instanceof Error ? e.message : 'Erreur réseau');
+    }
+    setTimeout(() => setTestState('idle'), 4000);
+  };
+
+  const hasKey = value.trim().length > 0;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <label style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>{label}</label>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: 1 }}>
+          <input
+            data-testid={`provider-key-input-${provider}`}
+            type={visible ? 'text' : 'password'}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={placeholder}
+            style={{
+              width: '100%',
+              padding: '10px 40px 10px 12px',
+              borderRadius: '8px',
+              background: 'rgba(15,15,26,0.8)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              color: '#e2e8f0',
+              fontFamily: 'monospace',
+              fontSize: '12px',
+              outline: 'none',
+              boxSizing: 'border-box',
+            }}
+            onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(167,139,250,0.5)'; }}
+            onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; }}
+          />
+          <button
+            onClick={() => setVisible((v) => !v)}
+            style={{
+              position: 'absolute',
+              right: '10px',
+              top: '50%',
+              transform: 'translateY(-50%)',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: '#64748b',
+              padding: '2px',
+              display: 'flex',
+              alignItems: 'center',
+            }}
+            title={visible ? 'Masquer' : 'Afficher'}
+          >
+            {visible ? <EyeOff size={14} /> : <Eye size={14} />}
+          </button>
+        </div>
+
+        <button
+          data-testid={`provider-key-save-${provider}`}
+          onClick={handleSave}
+          disabled={saving}
+          style={{
+            padding: '10px 14px',
+            borderRadius: '8px',
+            background: 'rgba(124,58,237,0.15)',
+            border: '1px solid rgba(124,58,237,0.3)',
+            color: '#a78bfa',
+            fontSize: '12px',
+            fontWeight: 600,
+            cursor: saving ? 'not-allowed' : 'pointer',
+            fontFamily: 'inherit',
+            whiteSpace: 'nowrap',
+            opacity: saving ? 0.6 : 1,
+          }}
+        >
+          {saving ? 'Sauvegarde…' : 'Sauvegarder'}
+        </button>
+
+        <button
+          data-testid={`provider-key-test-${provider}`}
+          onClick={handleTest}
+          disabled={!hasKey || testState === 'testing'}
+          style={{
+            padding: '10px 14px',
+            borderRadius: '8px',
+            background:
+              testState === 'ok' ? 'rgba(34,197,94,0.1)' :
+              testState === 'error' ? 'rgba(239,68,68,0.1)' :
+              'rgba(255,255,255,0.03)',
+            border:
+              testState === 'ok' ? '1px solid rgba(34,197,94,0.3)' :
+              testState === 'error' ? '1px solid rgba(239,68,68,0.3)' :
+              '1px solid rgba(255,255,255,0.08)',
+            color:
+              testState === 'ok' ? '#4ade80' :
+              testState === 'error' ? '#f87171' :
+              '#64748b',
+            fontSize: '12px',
+            fontWeight: 600,
+            cursor: (!hasKey || testState === 'testing') ? 'not-allowed' : 'pointer',
+            fontFamily: 'inherit',
+            whiteSpace: 'nowrap',
+            opacity: (!hasKey || testState === 'testing') ? 0.5 : 1,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '5px',
+          }}
+        >
+          {testState === 'testing' && <RefreshCw size={11} style={{ animation: 'spin 1s linear infinite' }} />}
+          {testState === 'ok' && <CheckCircle size={11} />}
+          {testState === 'error' && <XCircle size={11} />}
+          {testState === 'testing' ? 'Test…' : testState === 'ok' ? testMsg : testState === 'error' ? testMsg : 'Tester'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ProviderApiKeysSection() {
+  const [keys, setKeys] = useState<Record<string, string>>({});
+
+  const fetchKeys = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/settings/providers`);
+      if (res.ok) {
+        const data = await res.json() as Record<string, string>;
+        setKeys(data);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => { fetchKeys(); }, [fetchKeys]);
+
+  const providers: Array<{ provider: string; label: string; placeholder: string }> = [
+    { provider: 'openrouter', label: 'OpenRouter API Key', placeholder: 'sk-or-v1-…' },
+    { provider: 'replicate',  label: 'Replicate API Token', placeholder: 'r8_…' },
+    { provider: 'openai',     label: 'OpenAI API Key', placeholder: 'sk-…' },
+    { provider: 'huggingface', label: 'HuggingFace API Key', placeholder: 'hf_…' },
+    { provider: 'together',   label: 'Together AI API Key (free credits)', placeholder: 'together-…' },
+    { provider: 'fal',        label: 'Fal.ai API Key (free credits)', placeholder: 'fal-…' },
+  ];
+
+  const configuredCount = providers.filter((p) => keys[p.provider]?.trim()).length;
+
+  return (
+    <div
+      className="glass"
+      style={{ borderRadius: '16px', padding: '24px' }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px' }}>
+        <Key size={15} color="#f59e0b" />
+        <h2 style={{ fontSize: '14px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>
+          Provider API Keys
+        </h2>
+        <span
+          data-testid="provider-keys-configured-count"
+          style={{
+            marginLeft: 'auto',
+            fontSize: '11px',
+            padding: '2px 10px',
+            borderRadius: '20px',
+            background: configuredCount > 0 ? 'rgba(34,197,94,0.1)' : 'rgba(100,116,139,0.1)',
+            border: configuredCount > 0 ? '1px solid rgba(34,197,94,0.25)' : '1px solid rgba(100,116,139,0.25)',
+            color: configuredCount > 0 ? '#4ade80' : '#64748b',
+          }}
+        >
+          {configuredCount > 0 ? `${configuredCount} configuré${configuredCount > 1 ? 's' : ''}` : 'Aucun provider configuré'}
+        </span>
+      </div>
+
+      <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 20px' }}>
+        Clés utilisées pour la génération d&apos;images et autres fonctions IA. Stockées en base locale.
+      </p>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {providers.map((p) => (
+          <ProviderRow
+            key={p.provider}
+            provider={p.provider}
+            label={p.label}
+            placeholder={p.placeholder}
+            initialValue={keys[p.provider] ?? ''}
+            onSaved={fetchKeys}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ConnectionsTab() {
   const [wa, setWa] = useState<WhatsAppState>({ status: 'LOADING' });
   const [toggling, setToggling] = useState(false);
@@ -488,6 +988,9 @@ function ConnectionsTab() {
           </div>
         )}
       </div>
+
+      {/* Provider API Keys */}
+      <ProviderApiKeysSection />
     </div>
   );
 }
@@ -536,12 +1039,15 @@ export default function SettingsPage() {
         }}
       >
         <TabButton label="General" active={tab === 'general'} onClick={() => setTab('general')} />
-        <TabButton label="Connections" active={tab === 'connections'} onClick={() => setTab('connections')} />
+        <TabButton label="Connexions" active={tab === 'connections'} onClick={() => setTab('connections')} />
+        <TabButton label="Média" active={tab === 'media'} onClick={() => setTab('media')} />
       </div>
 
       {/* Content */}
       <div style={{ flex: 1, padding: '28px 32px' }}>
-        {tab === 'general' ? <GeneralTab /> : <ConnectionsTab />}
+        {tab === 'general' && <GeneralTab />}
+        {tab === 'connections' && <ConnectionsTab />}
+        {tab === 'media' && <MediaTab onGoToConnections={() => setTab('connections')} />}
       </div>
 
       <style jsx global>{`

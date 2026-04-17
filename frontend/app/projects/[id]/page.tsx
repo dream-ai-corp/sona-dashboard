@@ -76,6 +76,16 @@ interface Job {
   mtime?: number;
 }
 
+interface AuditReport {
+  id: string;
+  project: string;
+  sprintTitle: string;
+  item_id: string | null;
+  status: 'pass' | 'partial' | 'fail';
+  detail: string | null;
+  created_at: number;
+}
+
 function statusStyle(status: string) {
   switch (status?.toLowerCase()) {
     case 'active': return { color: '#4ade80', bg: 'rgba(34,197,94,0.1)', border: 'rgba(34,197,94,0.25)' };
@@ -118,7 +128,165 @@ const primaryBtnStyle: React.CSSProperties = {
   cursor: 'pointer', fontFamily: 'inherit',
 };
 
-function BacklogHeader({ header, level }: { header: string; level: number }) {
+type AuditStatus = 'pass' | 'partial' | 'fail' | null;
+
+function auditChipStyle(status: AuditStatus): { color: string; bg: string; border: string; label: string } {
+  switch (status) {
+    case 'pass':    return { color: '#4ade80', bg: 'rgba(34,197,94,0.12)',   border: 'rgba(34,197,94,0.3)',   label: 'Audit OK' };
+    case 'partial': return { color: '#fbbf24', bg: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.3)', label: 'Audit partial' };
+    case 'fail':    return { color: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.3)', label: 'Audit FAIL' };
+    default:        return { color: '#64748b', bg: 'rgba(100,116,139,0.08)', border: 'rgba(100,116,139,0.2)', label: 'Not audited' };
+  }
+}
+
+function auditItemIconStyle(status: AuditStatus): { color: string; title: string } {
+  switch (status) {
+    case 'pass':    return { color: '#4ade80', title: 'Audit: PASS' };
+    case 'partial': return { color: '#fbbf24', title: 'Audit: PARTIAL' };
+    case 'fail':    return { color: '#f87171', title: 'Audit: FAIL' };
+    default:        return { color: 'transparent', title: '' };
+  }
+}
+
+function AuditModal({
+  sprint,
+  reports,
+  onClose,
+}: {
+  sprint: string;
+  reports: AuditReport[];
+  onClose: () => void;
+}) {
+  const sprintReport = reports.find((r) => !r.item_id) ?? reports[0];
+  const itemReports = reports.filter((r) => r.item_id);
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '24px',
+      }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{
+        background: '#0f172a', border: '1px solid rgba(255,255,255,0.1)',
+        borderRadius: '16px', padding: '24px', maxWidth: '600px', width: '100%',
+        maxHeight: '80vh', overflowY: 'auto',
+        boxShadow: '0 24px 64px rgba(0,0,0,0.6)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '16px' }}>
+          <div>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '4px' }}>
+              Audit Report
+            </div>
+            <h3 style={{ fontSize: '15px', fontWeight: 700, color: '#e2e8f0', margin: 0 }}>{sprint}</h3>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#475569', padding: '4px' }}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        {sprintReport && (
+          <div style={{
+            padding: '14px', borderRadius: '10px',
+            background: sprintReport.status === 'pass'
+              ? 'rgba(34,197,94,0.06)'
+              : sprintReport.status === 'partial'
+              ? 'rgba(251,191,36,0.06)'
+              : 'rgba(248,113,113,0.06)',
+            border: `1px solid ${sprintReport.status === 'pass' ? 'rgba(34,197,94,0.2)' : sprintReport.status === 'partial' ? 'rgba(251,191,36,0.2)' : 'rgba(248,113,113,0.2)'}`,
+            marginBottom: '16px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: sprintReport.detail ? '10px' : 0 }}>
+              {sprintReport.status === 'pass' && <CheckCircle2 size={15} color="#4ade80" />}
+              {sprintReport.status === 'partial' && <AlertCircle size={15} color="#fbbf24" />}
+              {sprintReport.status === 'fail' && <X size={15} color="#f87171" />}
+              <span style={{
+                fontSize: '12px', fontWeight: 700,
+                color: sprintReport.status === 'pass' ? '#4ade80' : sprintReport.status === 'partial' ? '#fbbf24' : '#f87171',
+                textTransform: 'uppercase', letterSpacing: '0.06em',
+              }}>
+                {sprintReport.status}
+              </span>
+              <span style={{ fontSize: '11px', color: '#475569', marginLeft: 'auto' }}>
+                {new Date(sprintReport.created_at).toLocaleDateString()}
+              </span>
+            </div>
+            {sprintReport.detail && (
+              <p style={{ fontSize: '13px', color: '#94a3b8', margin: 0, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                {sprintReport.detail}
+              </p>
+            )}
+            <div style={{ fontSize: '11px', color: '#334155', marginTop: sprintReport.detail ? '8px' : 0 }}>
+              {new Date(sprintReport.created_at).toLocaleString()}
+            </div>
+          </div>
+        )}
+
+        {itemReports.length > 0 && (
+          <div>
+            <div style={{ fontSize: '11px', fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '10px' }}>
+              Per-item results
+            </div>
+            {itemReports.map((r) => {
+              const chip = auditChipStyle(r.status);
+              return (
+                <div key={r.id} style={{
+                  display: 'flex', gap: '10px', padding: '10px 12px',
+                  borderRadius: '8px', marginBottom: '6px',
+                  background: 'rgba(255,255,255,0.02)',
+                  border: '1px solid rgba(255,255,255,0.05)',
+                }}>
+                  <span style={{
+                    fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '5px',
+                    background: chip.bg, color: chip.color, border: `1px solid ${chip.border}`,
+                    flexShrink: 0, alignSelf: 'flex-start', letterSpacing: '0.04em',
+                  }}>
+                    {r.item_id}
+                  </span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: '11px', fontWeight: 600, color: chip.color, marginBottom: r.detail ? '4px' : 0 }}>
+                      {r.status.toUpperCase()}
+                    </div>
+                    {r.detail && (
+                      <p style={{ fontSize: '12px', color: '#64748b', margin: 0, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                        {r.detail}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {reports.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '20px 0', color: '#334155', fontSize: '13px' }}>
+            No audit reports for this sprint yet.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BacklogHeader({
+  header,
+  level,
+  auditStatus,
+  onAuditClick,
+}: {
+  header: string;
+  level: number;
+  auditStatus: AuditStatus;
+  onAuditClick: () => void;
+}) {
+  const chip = auditChipStyle(auditStatus);
   return (
     <div
       data-testid="backlog-section-header"
@@ -147,6 +315,18 @@ function BacklogHeader({ header, level }: { header: string; level: number }) {
       >
         {header}
       </span>
+      <button
+        onClick={onAuditClick}
+        title={chip.label}
+        style={{
+          fontSize: '10px', fontWeight: 700, padding: '2px 8px', borderRadius: '20px',
+          background: chip.bg, color: chip.color, border: `1px solid ${chip.border}`,
+          cursor: 'pointer', letterSpacing: '0.05em', transition: 'all 150ms',
+          fontFamily: 'inherit',
+        }}
+      >
+        Audit
+      </button>
     </div>
   );
 }
@@ -166,12 +346,14 @@ function BacklogItemRow({
   onEdit,
   onPriorityChange,
   saving,
+  auditStatus,
 }: {
   item: BacklogItem;
   onToggle: (item: BacklogItem) => void;
   onEdit: (item: BacklogItem, text: string) => void;
   onPriorityChange: (item: BacklogItem, priority: 'P1' | 'P2' | 'P3' | null) => void;
   saving: boolean;
+  auditStatus: AuditStatus;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.text);
@@ -243,6 +425,18 @@ function BacklogItemRow({
       >
         {item.priority ?? '—'}
       </button>
+
+      {/* Audit status icon */}
+      {auditStatus && (() => {
+        const icon = auditItemIconStyle(auditStatus);
+        return (
+          <span title={icon.title} style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
+            {auditStatus === 'pass' && <CheckCircle2 size={13} color={icon.color} />}
+            {auditStatus === 'partial' && <AlertCircle size={13} color={icon.color} />}
+            {auditStatus === 'fail' && <X size={13} color={icon.color} />}
+          </span>
+        );
+      })()}
 
       {editing ? (
         <div style={{ flex: 1, display: 'flex', gap: '6px', alignItems: 'center' }}>
@@ -471,6 +665,10 @@ export default function ProjectDetailPage() {
   const [statusSaving, setStatusSaving] = useState(false);
   const statusDropdownRef = useRef<HTMLDivElement>(null);
 
+  // Audit state
+  const [auditReports, setAuditReports] = useState<AuditReport[]>([]);
+  const [auditModal, setAuditModal] = useState<{ sprint: string; reports: AuditReport[] } | null>(null);
+
   // Voice input for backlog
   const [backlogListening, setBacklogListening] = useState(false);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -566,12 +764,25 @@ export default function ProjectDetailPage() {
     }
   }, [id]);
 
+  const fetchAudits = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/audits?project=${encodeURIComponent(id)}`);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = await res.json() as any;
+      const rows: any[] = Array.isArray(data) ? data : data.audits ?? [];
+      setAuditReports(rows.map((r: any) => ({ ...r, sprintTitle: r.sprint ?? r.sprint_title ?? '' })));
+    } catch {
+      setAuditReports([]);
+    }
+  }, [id]);
+
   useEffect(() => {
     fetchProject();
     fetchBacklog();
     fetchBrief();
     fetchSprints();
     fetchJobs();
+    fetchAudits();
 
     // Silent auto-refresh every 5s — backlog and jobs can change while a daemon job runs
     const silentRefreshBacklog = async () => {
@@ -588,9 +799,19 @@ export default function ProjectDetailPage() {
         setJobs(data.jobs ?? []);
       } catch {}
     };
-    const interval = setInterval(() => { silentRefreshBacklog(); silentRefreshJobs(); }, 5000);
+    const silentRefreshAudits = async () => {
+      try {
+        const res = await fetch(`/api/audits?project=${encodeURIComponent(id)}`);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const raw = await res.json() as any[];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const rows: any[] = Array.isArray(raw) ? raw : (raw as any).audits ?? [];
+        setAuditReports(rows.map((r: any) => ({ ...r, sprintTitle: r.sprint ?? r.sprint_title ?? '' })));
+      } catch {}
+    };
+    const interval = setInterval(() => { silentRefreshBacklog(); silentRefreshJobs(); silentRefreshAudits(); }, 5000);
     return () => clearInterval(interval);
-  }, [fetchProject, fetchBacklog, fetchBrief, fetchSprints, fetchJobs, id]);
+  }, [fetchProject, fetchBacklog, fetchBrief, fetchSprints, fetchJobs, fetchAudits, id]);
 
   const handleToggle = async (item: BacklogItem) => {
     setSaving(true);
@@ -1189,10 +1410,40 @@ export default function ProjectDetailPage() {
                 {sections.map((section, si) => {
                   const sOpen = section.items.filter((i) => !i.checked);
                   const sDone = section.items.filter((i) => i.checked);
+
+                  // Audit data for this sprint section
+                  const sprintAudits = section.header
+                    ? auditReports.filter((r) => r.sprintTitle === section.header)
+                    : [];
+                  const sprintAuditStatus: AuditStatus = sprintAudits.length === 0
+                    ? null
+                    : sprintAudits.some((r) => r.status === 'fail')
+                    ? 'fail'
+                    : sprintAudits.some((r) => r.status === 'partial')
+                    ? 'partial'
+                    : 'pass';
+
+                  // Get item_id from item text (e.g. **S3-06**) or fall back to full text
+                  const getItemId = (text: string) =>
+                    text.match(/\*\*([A-Z0-9-]+)\*\*/)?.[1] ?? text;
+
+                  // Get latest audit status for an item by its parsed ID
+                  const getItemAuditStatus = (text: string): AuditStatus => {
+                    if (sprintAudits.length === 0) return null;
+                    const itemId = getItemId(text);
+                    const match = sprintAudits.find((r) => r.item_id === itemId || r.item_id === text);
+                    return match?.status ?? null;
+                  };
+
                   return (
                     <div key={si} style={{ marginBottom: si < sections.length - 1 ? '20px' : 0 }}>
                       {section.header !== null && (
-                        <BacklogHeader header={section.header} level={section.level} />
+                        <BacklogHeader
+                          header={section.header}
+                          level={section.level}
+                          auditStatus={sprintAuditStatus}
+                          onAuditClick={() => setAuditModal({ sprint: section.header!, reports: sprintAudits })}
+                        />
                       )}
                       {sOpen.length > 0 && (
                         <div style={{ marginBottom: sDone.length > 0 ? '10px' : 0 }}>
@@ -1207,6 +1458,7 @@ export default function ProjectDetailPage() {
                               onEdit={handleEdit}
                               onPriorityChange={handlePriorityChange}
                               saving={saving}
+                              auditStatus={getItemAuditStatus(item.text)}
                             />
                           ))}
                         </div>
@@ -1224,6 +1476,7 @@ export default function ProjectDetailPage() {
                               onEdit={handleEdit}
                               onPriorityChange={handlePriorityChange}
                               saving={saving}
+                              auditStatus={getItemAuditStatus(item.text)}
                             />
                           ))}
                         </div>
@@ -1253,6 +1506,7 @@ export default function ProjectDetailPage() {
                         onEdit={handleEdit}
                         onPriorityChange={handlePriorityChange}
                         saving={saving}
+                        auditStatus={null}
                       />
                     ))}
                   </div>
@@ -1270,6 +1524,7 @@ export default function ProjectDetailPage() {
                         onEdit={handleEdit}
                         onPriorityChange={handlePriorityChange}
                         saving={saving}
+                        auditStatus={null}
                       />
                     ))}
                   </div>
@@ -1404,6 +1659,14 @@ export default function ProjectDetailPage() {
         .edit-btn { opacity: 0 !important; }
         div:hover > .edit-btn, div:focus-within > .edit-btn { opacity: 1 !important; }
       `}</style>
+
+      {auditModal && (
+        <AuditModal
+          sprint={auditModal.sprint}
+          reports={auditModal.reports}
+          onClose={() => setAuditModal(null)}
+        />
+      )}
     </div>
   );
 }

@@ -70,6 +70,25 @@ db.exec(`
     next_run_at INTEGER,
     created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
   );
+
+  CREATE TABLE IF NOT EXISTS provider_keys (
+    provider TEXT PRIMARY KEY,
+    api_key TEXT NOT NULL,
+    updated_at INTEGER DEFAULT (strftime('%s','now') * 1000)
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS audit_reports (
+    id TEXT PRIMARY KEY,
+    project TEXT NOT NULL,
+    sprint TEXT NOT NULL,
+    item_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('pass', 'partial', 'fail')),
+    detail TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
+  );
+  CREATE INDEX IF NOT EXISTS idx_audit_project_sprint ON audit_reports(project, sprint);
 `);
 
 // Prepared statements
@@ -549,6 +568,7 @@ function readProjectMeta(name) {
     tags: raw.tags,
     services: raw.services,
     git: raw.git,
+    urls: raw.urls,
     path: raw.path,
     hasBacklog,
   };
@@ -769,6 +789,49 @@ app.patch("/api/projects/:name/backlog/:index", (req, res) => {
   }
 });
 
+
+// ── Project files (list + download) ──────────────────────────────────────────
+app.get("/api/projects/:name/files", (req, res) => {
+  const name = req.params.name;
+  const projDir = path.join(PROJECTS_DIR, name);
+  if (!fs.existsSync(projDir)) return res.status(404).json({ error: "project not found" });
+
+  const EXTENSIONS = new Set([".md", ".txt", ".pdf", ".csv", ".gs"]);
+  const EXCLUDED_DIRS = new Set(["node_modules", ".git", "jobs", ".next", "dist", "build", "tests", "dashboard", "__pycache__"]);
+  const EXCLUDED_FILES = new Set(["package.json", "package-lock.json", "tsconfig.json", "next.config.ts", "docker-compose.yml", "docker-compose.dev.yml", "Dockerfile", "Dockerfile.dev", "Makefile", ".gitignore", ".env", ".env.example", "README.md"]);
+  const files = [];
+
+  function scan(dir, prefix) {
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (EXCLUDED_DIRS.has(entry.name)) continue;
+        const full = path.join(dir, entry.name);
+        const rel = prefix ? prefix + "/" + entry.name : entry.name;
+        if (entry.isDirectory()) {
+          scan(full, rel);
+        } else if (EXTENSIONS.has(path.extname(entry.name).toLowerCase()) && !EXCLUDED_FILES.has(entry.name)) {
+          const stat = fs.statSync(full);
+          files.push({ name: rel, fullPath: full, size: stat.size, modified: stat.mtimeMs });
+        }
+      }
+    } catch {}
+  }
+  scan(projDir, "");
+  files.sort((a, b) => b.modified - a.modified);
+  res.json(files);
+});
+
+app.get("/api/projects/:name/files/download", (req, res) => {
+  const name = req.params.name;
+  const file = String(req.query.file || "");
+  if (!file || file.includes("..") || file.startsWith("/")) {
+    return res.status(400).json({ error: "invalid file path" });
+  }
+  const full = path.join(PROJECTS_DIR, name, file);
+  if (!fs.existsSync(full)) return res.status(404).json({ error: "file not found" });
+  res.setHeader("Content-Disposition", "attachment; filename=\"" + path.basename(file) + "\"");
+  res.sendFile(full);
+});
 
 // ── Project brainstorm ────────────────────────────────────────────────────────
 const BRAINSTORM_TEMPLATE = (name) => `# Brainstorm — ${name}
@@ -1292,6 +1355,594 @@ app.post("/api/recurring-jobs/:id/run", async (req, res) => {
     console.error(`[scheduler] manual run failed for "${row.name}" (${id}):`, err.message);
     res.status(503).json({ error: err.message });
   }
+});
+
+// ── Provider API Keys Settings ─────────────────────────────────────────────────
+// GET  /api/settings/providers  → { replicate, openai, openrouter } (keys masked)
+// POST /api/settings/providers  → { provider, api_key } saves/updates a key
+// POST /api/settings/providers/:provider/test → tests a provider key
+
+const VALID_PROVIDERS = ["replicate", "openai", "openrouter", "huggingface", "together", "fal"];
+
+app.get("/api/settings/providers", (req, res) => {
+  const rows = db.prepare("SELECT provider, api_key FROM provider_keys").all();
+  const result = {};
+  for (const row of rows) {
+    result[row.provider] = row.api_key;
+  }
+  // Fill missing providers with empty strings
+  for (const p of VALID_PROVIDERS) {
+    if (!(p in result)) result[p] = "";
+  }
+  res.json(result);
+});
+
+app.post("/api/settings/providers", (req, res) => {
+  const { provider, api_key } = req.body || {};
+  if (!provider || !VALID_PROVIDERS.includes(provider)) {
+    return res.status(400).json({ ok: false, error: `provider must be one of: ${VALID_PROVIDERS.join(", ")}` });
+  }
+  if (typeof api_key !== "string") {
+    return res.status(400).json({ ok: false, error: "api_key must be a string" });
+  }
+
+  if (api_key.trim() === "") {
+    // Delete the key if empty string is sent
+    db.prepare("DELETE FROM provider_keys WHERE provider = ?").run(provider);
+  } else {
+    db.prepare(`
+      INSERT INTO provider_keys (provider, api_key, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(provider) DO UPDATE SET api_key = excluded.api_key, updated_at = excluded.updated_at
+    `).run(provider, api_key.trim(), Date.now());
+  }
+
+  res.json({ ok: true });
+});
+
+app.post("/api/settings/providers/:provider/test", async (req, res) => {
+  const { provider } = req.params;
+  if (!VALID_PROVIDERS.includes(provider)) {
+    return res.status(400).json({ ok: false, error: "unknown provider" });
+  }
+
+  const row = db.prepare("SELECT api_key FROM provider_keys WHERE provider = ?").get(provider);
+  const apiKey = row?.api_key || process.env[`${provider.toUpperCase()}_API_KEY`] || process.env.REPLICATE_API_TOKEN || "";
+
+  if (!apiKey) {
+    return res.json({ ok: false, error: "No API key configured for this provider" });
+  }
+
+  try {
+    let testOk = false;
+    let errorMsg = "";
+
+    if (provider === "openai") {
+      const r = await fetch("https://api.openai.com/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      testOk = r.ok;
+      if (!testOk) errorMsg = `OpenAI HTTP ${r.status}`;
+    } else if (provider === "openrouter") {
+      const r = await fetch("https://openrouter.ai/api/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      testOk = r.ok;
+      if (!testOk) errorMsg = `OpenRouter HTTP ${r.status}`;
+    } else if (provider === "replicate") {
+      const r = await fetch("https://api.replicate.com/v1/account", {
+        headers: { Authorization: `Token ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      testOk = r.ok;
+      if (!testOk) errorMsg = `Replicate HTTP ${r.status}`;
+    } else if (provider === "huggingface") {
+      const r = await fetch("https://huggingface.co/api/whoami", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      testOk = r.ok;
+      if (!testOk) errorMsg = `HuggingFace HTTP ${r.status}`;
+    } else if (provider === "together") {
+      const r = await fetch("https://api.together.xyz/v1/models", {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      testOk = r.ok;
+      if (!testOk) errorMsg = `Together.ai HTTP ${r.status}`;
+    } else if (provider === "fal") {
+      const r = await fetch("https://queue.fal.run/fal-ai/flux/health", {
+        headers: { Authorization: `Key ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      // fal.ai returns 200 or 404/405 on health but 401 on bad key
+      testOk = r.status !== 401 && r.status !== 403;
+      if (!testOk) errorMsg = `Fal.ai HTTP ${r.status}`;
+    }
+
+    res.json({ ok: testOk, error: testOk ? undefined : errorMsg });
+  } catch (err) {
+    res.json({ ok: false, error: err.message });
+  }
+});
+
+// ── Image Models ───────────────────────────────────────────────────────────────
+// GET /api/models/image
+// Returns available image generation models based on configured providers.
+// OpenRouter models are fetched dynamically; Replicate models are static.
+
+const REPLICATE_IMAGE_MODELS = [
+  { id: "flux-schnell",   label: "FLUX.1 Schnell",      provider: "replicate", tier: "free" },
+  { id: "sdxl",           label: "Stable Diffusion XL",  provider: "replicate", tier: "free" },
+  { id: "sdxl-lightning", label: "SDXL Lightning",        provider: "replicate", tier: "free" },
+  { id: "flux-dev",       label: "FLUX.1 Dev",            provider: "replicate", tier: "paid" },
+];
+
+app.get("/api/models/image", async (req, res) => {
+  const models = [];
+
+  const replicateKey = getProviderKey("replicate");
+  if (replicateKey) {
+    models.push(...REPLICATE_IMAGE_MODELS);
+  }
+
+  const openrouterKey = getProviderKey("openrouter");
+  if (openrouterKey) {
+    try {
+      const r = await fetch("https://openrouter.ai/api/v1/models", {
+        headers: { Authorization: `Bearer ${openrouterKey}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        const imageModels = (data.data || []).filter((m) => {
+          const modality = m.architecture?.modality || m.architecture?.output_modality || "";
+          const outputModalities = m.architecture?.output_modalities || [];
+          return (
+            modality.includes("->image") ||
+            modality.includes("image") && modality.includes("->") ||
+            outputModalities.includes("image")
+          );
+        });
+        for (const m of imageModels) {
+          const promptPrice = parseFloat(m.pricing?.prompt || "1");
+          const completionPrice = parseFloat(m.pricing?.completion || "1");
+          const isFree = promptPrice === 0 && completionPrice === 0;
+          models.push({
+            id: m.id,
+            label: m.name || m.id,
+            provider: "openrouter",
+            tier: isFree ? "free" : "paid",
+          });
+        }
+      } else {
+        console.error("[models/image] OpenRouter HTTP", r.status);
+      }
+    } catch (err) {
+      console.error("[models/image] OpenRouter fetch failed:", err.message);
+    }
+  }
+
+  // Together.ai — fetch dynamically, filter type === "image"
+  const togetherKey = getProviderKey("together");
+  if (togetherKey) {
+    try {
+      const r = await fetch("https://api.together.xyz/v1/models", {
+        headers: { Authorization: `Bearer ${togetherKey}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        const imageModels = (data || []).filter((m) => m.type === "image");
+        for (const m of imageModels) {
+          models.push({
+            id: `together:${m.id}`,
+            label: m.display_name || m.id,
+            provider: "together",
+            tier: "free",
+          });
+        }
+      } else {
+        console.error("[models/image] Together.ai HTTP", r.status);
+      }
+    } catch (err) {
+      console.error("[models/image] Together.ai fetch failed:", err.message);
+    }
+  }
+
+  // Fal.ai — static list of free models
+  const falKey = getProviderKey("fal");
+  if (falKey) {
+    const FAL_IMAGE_MODELS = [
+      { id: "fal:fal-ai/flux",          label: "FLUX (Fal.ai)",          tier: "free" },
+      { id: "fal:fal-ai/flux-realism",   label: "FLUX Realism (Fal.ai)", tier: "free" },
+      { id: "fal:fal-ai/fast-sdxl",      label: "Fast SDXL (Fal.ai)",    tier: "free" },
+    ];
+    for (const m of FAL_IMAGE_MODELS) {
+      models.push({ ...m, provider: "fal" });
+    }
+  }
+
+  // Fallback: return static Replicate list when no providers are configured
+  if (models.length === 0) {
+    models.push(...REPLICATE_IMAGE_MODELS);
+  }
+
+  res.json({ models });
+});
+
+// ── Image Generation ──────────────────────────────────────────────────────────
+// POST /api/generate/image
+// Body: { prompt, model, ratio, provider? }
+// Returns: { ok, imageUrl } or { ok: false, error }
+//
+// API keys are read from provider_keys DB table first, then env vars as fallback.
+
+function getProviderKey(provider) {
+  const row = db.prepare("SELECT api_key FROM provider_keys WHERE provider = ?").get(provider);
+  if (row?.api_key) return row.api_key;
+  // env fallback
+  if (provider === "replicate") return process.env.REPLICATE_API_TOKEN || "";
+  if (provider === "openai") return process.env.OPENAI_API_KEY || "";
+  if (provider === "openrouter") return process.env.OPENROUTER_API_KEY || "";
+  if (provider === "huggingface") return process.env.HUGGINGFACE_API_KEY || "";
+  if (provider === "together") return process.env.TOGETHER_API_KEY || "";
+  if (provider === "fal") return process.env.FAL_API_KEY || "";
+  return "";
+}
+
+const REPLICATE_TOKEN = process.env.REPLICATE_API_TOKEN || "";
+
+const MODEL_IDS = {
+  "flux-schnell":    "black-forest-labs/flux-schnell",
+  "sdxl":            "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37291fae01fac53a39f3b80",
+  "sdxl-lightning":  "bytedance/sdxl-lightning-4step:5f24084160c9089501c1b3545d9be3c27883ae2239b6f412990e82d4a6210f8",
+  "flux-dev":        "black-forest-labs/flux-dev",
+};
+
+const RATIO_TO_SIZE = {
+  "1:1":  { width: 1024, height: 1024 },
+  "16:9": { width: 1344, height: 768  },
+  "9:16": { width: 768,  height: 1344 },
+  "4:3":  { width: 1152, height: 896  },
+  "3:4":  { width: 896,  height: 1152 },
+};
+
+async function pollReplicate(predictionId, token, maxWaitMs = 120000) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const r = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = await r.json();
+    if (data.status === "succeeded") return data.output;
+    if (data.status === "failed" || data.status === "canceled") throw new Error(data.error || "Prediction failed");
+  }
+  throw new Error("Timed out waiting for image generation");
+}
+
+// Determine which provider to use for a given model ID
+function resolveImageProvider(model) {
+  if (model.startsWith("together:")) return "together";
+  if (model.startsWith("fal:")) return "fal";
+  if (MODEL_IDS[model]) return "replicate";
+  // OpenRouter models contain a "/" (e.g. "openai/dall-e-3", "stability-ai/sd3")
+  if (model.includes("/")) return "openrouter";
+  return "replicate";
+}
+
+async function generateWithTogether(prompt, model, size, apiKey) {
+  // Strip "together:" prefix to get the actual model id
+  const modelId = model.startsWith("together:") ? model.slice(9) : model;
+  const res = await fetch("https://api.together.xyz/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: modelId,
+      prompt,
+      n: 1,
+      width: size.width,
+      height: size.height,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    let errMsg = `Together.ai error ${res.status}`;
+    try { errMsg = JSON.parse(text)?.error?.message || errMsg; } catch {}
+    throw new Error(errMsg);
+  }
+
+  const data = await res.json();
+  const item = data.data?.[0];
+  if (item?.url) return { imageUrl: item.url };
+  if (item?.b64_json) return { imageUrl: `data:image/png;base64,${item.b64_json}` };
+  throw new Error("Together.ai: no image URL in response");
+}
+
+async function generateWithFal(prompt, model, size, apiKey) {
+  // Strip "fal:" prefix to get the actual model id (e.g. "fal-ai/flux")
+  const modelId = model.startsWith("fal:") ? model.slice(4) : model;
+  const submitRes = await fetch(`https://queue.fal.run/${modelId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Key ${apiKey}`,
+    },
+    body: JSON.stringify({
+      prompt,
+      image_size: { width: size.width, height: size.height },
+      num_images: 1,
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!submitRes.ok) {
+    const text = await submitRes.text().catch(() => "");
+    let errMsg = `Fal.ai submit error ${submitRes.status}`;
+    try { errMsg = JSON.parse(text)?.detail || errMsg; } catch {}
+    throw new Error(errMsg);
+  }
+
+  const job = await submitRes.json();
+
+  // If response already contains images (sync mode)
+  if (job.images?.[0]?.url) return { imageUrl: job.images[0].url };
+
+  // Otherwise poll the queue
+  const requestId = job.request_id;
+  if (!requestId) throw new Error("Fal.ai: no request_id in response");
+
+  const deadline = Date.now() + 120000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const pollRes = await fetch(`https://queue.fal.run/${modelId}/requests/${requestId}`, {
+      headers: { Authorization: `Key ${apiKey}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!pollRes.ok) continue;
+    const poll = await pollRes.json();
+    if (poll.status === "COMPLETED" || poll.images?.[0]?.url) {
+      const url = poll.images?.[0]?.url || poll.output?.images?.[0]?.url;
+      if (url) return { imageUrl: url };
+      throw new Error("Fal.ai: no image URL in completed response");
+    }
+    if (poll.status === "FAILED") throw new Error(poll.error || "Fal.ai: generation failed");
+  }
+  throw new Error("Fal.ai: timeout — generation took too long");
+}
+
+async function generateWithOpenRouter(prompt, model, size, apiKey) {
+  // Try /images/generations first (OpenAI-compatible)
+  const res = await fetch("https://openrouter.ai/api/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://sona.beniben.dev",
+      "X-Title": "Sona Dashboard",
+    },
+    body: JSON.stringify({
+      model,
+      prompt,
+      n: 1,
+      size: `${size.width}x${size.height}`,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+
+  if (res.ok) {
+    const data = await res.json();
+    const item = data.data?.[0];
+    if (item?.url) return { imageUrl: item.url };
+    if (item?.b64_json) return { imageUrl: `data:image/png;base64,${item.b64_json}` };
+  }
+
+  // Fallback: chat completions endpoint (for multimodal models)
+  const chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://sona.beniben.dev",
+      "X-Title": "Sona Dashboard",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: `Generate an image: ${prompt}. Dimensions: ${size.width}x${size.height}.` }],
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+
+  if (!chatRes.ok) {
+    const text = await chatRes.text().catch(() => "");
+    let errMsg = `OpenRouter error ${chatRes.status}`;
+    try { errMsg = JSON.parse(text)?.error?.message || errMsg; } catch {}
+    throw new Error(errMsg);
+  }
+
+  const chatData = await chatRes.json();
+  if (chatData.data?.[0]?.url) return { imageUrl: chatData.data[0].url };
+  if (chatData.data?.[0]?.b64_json) return { imageUrl: `data:image/png;base64,${chatData.data[0].b64_json}` };
+
+  const content = chatData.choices?.[0]?.message?.content ?? "";
+  if (content.startsWith("data:image")) return { imageUrl: content };
+  const urlMatch = content.match(/https?:\/\/[^\s"]+\.(png|jpg|jpeg|webp)/i);
+  if (urlMatch) return { imageUrl: urlMatch[0] };
+
+  throw new Error("OpenRouter: le modèle n'a pas retourné d'image. Essayez un autre modèle.");
+}
+
+app.post("/api/generate/image", async (req, res) => {
+  const { prompt, model = "flux-schnell", ratio = "1:1", provider: explicitProvider } = req.body || {};
+  if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
+    return res.status(400).json({ ok: false, error: "prompt is required" });
+  }
+
+  const size = RATIO_TO_SIZE[ratio] || RATIO_TO_SIZE["1:1"];
+  const replicateKey = getProviderKey("replicate");
+  const openrouterKey = getProviderKey("openrouter");
+  const togetherKey = getProviderKey("together");
+  const falKey = getProviderKey("fal");
+
+  // Determine provider: explicit param > model-based detection > fallback to whatever is configured
+  const detectedProvider = explicitProvider || resolveImageProvider(model);
+
+  // Together.ai path
+  if (detectedProvider === "together") {
+    if (!togetherKey) {
+      return res.status(400).json({ ok: false, error: "Clé Together.ai non configurée. Ajoutez-la dans Paramètres → Connexions." });
+    }
+    try {
+      const result = await generateWithTogether(prompt.trim(), model, size, togetherKey);
+      return res.json({ ok: true, ...result, model, ratio, prompt, provider: "together" });
+    } catch (err) {
+      console.error("[generate/image] Together.ai error:", err.message);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+
+  // Fal.ai path
+  if (detectedProvider === "fal") {
+    if (!falKey) {
+      return res.status(400).json({ ok: false, error: "Clé Fal.ai non configurée. Ajoutez-la dans Paramètres → Connexions." });
+    }
+    try {
+      const result = await generateWithFal(prompt.trim(), model, size, falKey);
+      return res.json({ ok: true, ...result, model, ratio, prompt, provider: "fal" });
+    } catch (err) {
+      console.error("[generate/image] Fal.ai error:", err.message);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+
+  // OpenRouter path
+  if (detectedProvider === "openrouter" || (!replicateKey && openrouterKey)) {
+    if (!openrouterKey) {
+      return res.status(400).json({ ok: false, error: "Clé OpenRouter non configurée. Ajoutez-la dans Paramètres → Connexions." });
+    }
+    try {
+      const result = await generateWithOpenRouter(prompt.trim(), model, size, openrouterKey);
+      return res.json({ ok: true, ...result, model, ratio, prompt, provider: "openrouter" });
+    } catch (err) {
+      console.error("[generate/image] OpenRouter error:", err.message);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+
+  // Replicate path
+  if (!replicateKey) {
+    // Dev placeholder when no keys configured at all
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}"><rect width="100%" height="100%" fill="#1e1b4b"/><text x="50%" y="50%" font-family="monospace" font-size="32" fill="#a78bfa" text-anchor="middle" dominant-baseline="middle">[dev] ${encodeURIComponent(prompt.slice(0, 40))}</text></svg>`;
+    const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+    return res.json({ ok: true, imageUrl: dataUrl, model, ratio, prompt, dev: true });
+  }
+
+  const modelId = MODEL_IDS[model] || MODEL_IDS["flux-schnell"];
+  const input = { prompt: prompt.trim(), width: size.width, height: size.height, num_outputs: 1 };
+  if (model === "sdxl-lightning") input.num_inference_steps = 4;
+
+  try {
+    const createRes = await fetch("https://api.replicate.com/v1/predictions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${replicateKey}`, "Content-Type": "application/json", "Prefer": "wait" },
+      body: JSON.stringify({ version: modelId.includes(":") ? modelId.split(":")[1] : undefined, model: modelId.includes(":") ? undefined : modelId, input }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const prediction = await createRes.json();
+
+    if (prediction.error) throw new Error(prediction.error);
+
+    let output = prediction.output;
+    if (!output && prediction.id) output = await pollReplicate(prediction.id, replicateKey);
+    if (!output) throw new Error("No output from model");
+
+    const imageUrl = Array.isArray(output) ? output[0] : output;
+    res.json({ ok: true, imageUrl, model, ratio, prompt, provider: "replicate" });
+  } catch (err) {
+    console.error("[generate/image] Replicate error:", err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── Audit reports ─────────────────────────────────────────────────────────────
+app.get("/api/audits", (req, res) => {
+  const { project, sprint } = req.query;
+  let query = "SELECT * FROM audit_reports WHERE 1=1";
+  const params = [];
+  if (project) { query += " AND project = ?"; params.push(project); }
+  if (sprint)  { query += " AND sprint = ?";  params.push(sprint); }
+  query += " ORDER BY created_at DESC";
+  const rows = db.prepare(query).all(...params);
+  res.json({ audits: rows });
+});
+
+app.get("/api/audits/summary", (req, res) => {
+  const { project } = req.query;
+  let query = `
+    SELECT project, sprint,
+      SUM(CASE WHEN status = 'fail'    THEN 1 ELSE 0 END) AS fails,
+      SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END) AS partials,
+      SUM(CASE WHEN status = 'pass'    THEN 1 ELSE 0 END) AS passes,
+      COUNT(*) AS total,
+      MAX(created_at) AS last_audit_at
+    FROM audit_reports
+  `;
+  const params = [];
+  if (project) { query += " WHERE project = ?"; params.push(project); }
+  query += " GROUP BY project, sprint ORDER BY project, last_audit_at DESC";
+  const rows = db.prepare(query).all(...params);
+  // Compute overall status per sprint
+  const summaries = rows.map((r) => ({
+    project: r.project,
+    sprint: r.sprint,
+    status: r.fails > 0 ? "fail" : r.partials > 0 ? "partial" : "pass",
+    fails: r.fails,
+    partials: r.partials,
+    passes: r.passes,
+    total: r.total,
+    last_audit_at: r.last_audit_at,
+  }));
+  res.json({ summaries });
+});
+
+app.post("/api/audits", (req, res) => {
+  const { project, sprint, item_id, status, detail } = req.body ?? {};
+  if (!project || typeof project !== "string") return res.status(400).json({ error: "project required" });
+  if (!sprint  || typeof sprint  !== "string") return res.status(400).json({ error: "sprint required" });
+  const validStatuses = ["pass", "partial", "fail"];
+  if (!status || !validStatuses.includes(status)) {
+    return res.status(400).json({ error: "status must be pass, partial, or fail" });
+  }
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO audit_reports (id, project, sprint, item_id, status, detail)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, project.trim(), sprint.trim(), item_id ?? null, status, detail ?? null);
+  const row = db.prepare("SELECT * FROM audit_reports WHERE id = ?").get(id);
+  res.status(201).json({ audit: row });
+});
+
+app.get("/api/audits/:id", (req, res) => {
+  const row = db.prepare("SELECT * FROM audit_reports WHERE id = ?").get(req.params.id);
+  if (!row) return res.status(404).json({ error: "audit not found" });
+  res.json(row);
+});
+
+app.delete("/api/audits/:id", (req, res) => {
+  const { id } = req.params;
+  const existing = db.prepare("SELECT id FROM audit_reports WHERE id = ?").get(id);
+  if (!existing) return res.status(404).json({ error: "audit not found" });
+  db.prepare("DELETE FROM audit_reports WHERE id = ?").run(id);
+  res.json({ ok: true });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
