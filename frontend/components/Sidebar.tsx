@@ -11,6 +11,7 @@ import {
   Brain,
   Settings,
   FileText,
+  Lightbulb,
   Zap,
   FolderOpen,
   FolderKanban,
@@ -21,6 +22,7 @@ import {
   MessageSquare,
   Repeat2,
   ListOrdered,
+  Layers,
 } from 'lucide-react';
 
 const navItems = [
@@ -30,11 +32,13 @@ const navItems = [
   { icon: ListOrdered,     label: 'Queue',          route: '/queue' },
   { icon: Activity,        label: 'Activity',       route: '/activity' },
   { icon: MessageSquare,   label: 'Conversations',  route: '/conversations' },
+  { icon: Layers,          label: 'Média',          route: '/media' },
   { icon: Cpu,             label: 'System',         route: '/system' },
   { icon: Brain,           label: 'Memory',         route: '/memory' },
   { icon: FolderKanban,    label: 'Projects',       route: '/projects' },
   { icon: Repeat2,         label: 'Recurring Jobs', route: '/recurring-jobs' },
   { icon: FileText,        label: 'Notes',          route: '/notes' },
+  { icon: Lightbulb,       label: 'Brainstorm',     route: '/brainstorm' },
   { icon: Settings,        label: 'Settings',       route: '/settings' },
 ];
 
