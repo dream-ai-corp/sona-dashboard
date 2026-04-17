@@ -10,6 +10,7 @@ import {
   Cpu,
   Brain,
   Settings,
+  FileText,
   Zap,
   FolderOpen,
   FolderKanban,
@@ -18,18 +19,21 @@ import {
   Plus,
   Activity,
   MessageSquare,
+  Repeat2,
 } from 'lucide-react';
 
 const navItems = [
-  { icon: LayoutDashboard, label: 'Dashboard',     route: '/' },
-  { icon: Bot,             label: 'Agents',        route: '/agents' },
-  { icon: Briefcase,       label: 'Jobs',          route: '/jobs' },
-  { icon: Activity,        label: 'Activity',      route: '/activity' },
-  { icon: MessageSquare,   label: 'Conversations', route: '/conversations' },
-  { icon: Cpu,             label: 'System',        route: '/system' },
-  { icon: Brain,           label: 'Memory',        route: '/memory' },
-  { icon: FolderKanban,    label: 'Projects',      route: '/projects' },
-  { icon: Settings,        label: 'Settings',      route: '/system' },
+  { icon: LayoutDashboard, label: 'Dashboard',      route: '/' },
+  { icon: Bot,             label: 'Agents',         route: '/agents' },
+  { icon: Briefcase,       label: 'Jobs',           route: '/jobs' },
+  { icon: Activity,        label: 'Activity',       route: '/activity' },
+  { icon: MessageSquare,   label: 'Conversations',  route: '/conversations' },
+  { icon: Cpu,             label: 'System',         route: '/system' },
+  { icon: Brain,           label: 'Memory',         route: '/memory' },
+  { icon: FolderKanban,    label: 'Projects',       route: '/projects' },
+  { icon: Repeat2,         label: 'Recurring Jobs', route: '/recurring-jobs' },
+  { icon: FileText,        label: 'Notes',          route: '/notes' },
+  { icon: Settings,        label: 'Settings',       route: '/settings' },
 ];
 
 interface Project {

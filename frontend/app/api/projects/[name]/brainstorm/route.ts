@@ -2,9 +2,13 @@ export const dynamic = 'force-dynamic';
 
 const BACKEND = process.env.BACKEND_URL ?? 'http://backend:3011';
 
-export async function GET() {
+export async function GET(
+  _req: Request,
+  { params }: { params: Promise<{ name: string }> },
+) {
+  const { name } = await params;
   try {
-    const res = await fetch(`${BACKEND}/api/projects`, {
+    const res = await fetch(`${BACKEND}/api/projects/${encodeURIComponent(name)}/brainstorm`, {
       cache: 'no-store',
       signal: AbortSignal.timeout(5000),
     });
@@ -16,10 +20,14 @@ export async function GET() {
   }
 }
 
-export async function POST(req: Request) {
+export async function POST(
+  req: Request,
+  { params }: { params: Promise<{ name: string }> },
+) {
+  const { name } = await params;
   try {
     const body = await req.json();
-    const res = await fetch(`${BACKEND}/api/projects`, {
+    const res = await fetch(`${BACKEND}/api/projects/${encodeURIComponent(name)}/brainstorm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

@@ -10,6 +10,9 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=
       - SONA_API_URL=http://host.docker.internal:8080
+      - BACKEND_URL=http://backend:3011
+      - SONA_HOST_TOKEN=c7379b01c46c5ca58eb6c0851b8e25e84e84410b82e857532179953c33be51b9
+      - SONA_HOST_BRIDGE_URL=http://host.docker.internal:9998
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
