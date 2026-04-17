@@ -75,6 +75,37 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS backlog_sprints (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    priority TEXT DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+    status TEXT DEFAULT 'active' CHECK(status IN ('planning','active','paused','done')),
+    created_at INTEGER DEFAULT (unixepoch() * 1000)
+  );
+
+  CREATE TABLE IF NOT EXISTS backlog_items (
+    id TEXT PRIMARY KEY,
+    sprint_id TEXT NOT NULL REFERENCES backlog_sprints(id),
+    external_id TEXT,
+    text TEXT NOT NULL,
+    status TEXT DEFAULT 'todo' CHECK(status IN ('todo','in_progress','blocked','done')),
+    priority TEXT CHECK(priority IN ('P1','P2','P3')),
+    branch TEXT,
+    assigned_job_id TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER DEFAULT (unixepoch() * 1000)
+  );
+
+  CREATE TABLE IF NOT EXISTS backlog_acceptance_criteria (
+    id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL REFERENCES backlog_items(id),
+    text TEXT NOT NULL,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending','pass','fail')),
+    sort_order INTEGER NOT NULL DEFAULT 0
+  );
 `);
 
 // Prepared statements
@@ -2315,6 +2346,346 @@ app.get("/api/openrouter/models", async (_req, res) => {
   } catch (err) {
     return res.status(503).json({ ok: false, error: err.message });
   }
+});
+
+// ── Backlog DB API ───────────────────────────────────────────────────────────
+
+// GET /api/backlogs/:projectId/sprints — list sprints sorted by priority then sort_order
+app.get("/api/backlogs/:projectId/sprints", (req, res) => {
+  const projectId = decodeURIComponent(req.params.projectId);
+  if (!projectId || projectId.includes("..")) return res.status(400).json({ error: "invalid project id" });
+  const priorityOrder = "CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END";
+  const rows = db.prepare(
+    `SELECT * FROM backlog_sprints WHERE project_id = ? ORDER BY ${priorityOrder}, sort_order ASC`
+  ).all(projectId);
+  res.json({ sprints: rows });
+});
+
+// POST /api/backlogs/:projectId/sprints — create sprint
+app.post("/api/backlogs/:projectId/sprints", (req, res) => {
+  const projectId = decodeURIComponent(req.params.projectId);
+  if (!projectId || projectId.includes("..")) return res.status(400).json({ error: "invalid project id" });
+  const { name, priority = "medium", sort_order = 0, status = "active" } = req.body;
+  if (!name || typeof name !== "string") return res.status(400).json({ error: "name is required" });
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO backlog_sprints (id, project_id, name, sort_order, priority, status) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(id, projectId, name, sort_order, priority, status);
+  const sprint = db.prepare("SELECT * FROM backlog_sprints WHERE id = ?").get(id);
+  res.status(201).json(sprint);
+});
+
+// PATCH /api/backlogs/:projectId/sprints/:id — update sprint
+app.patch("/api/backlogs/:projectId/sprints/:id", (req, res) => {
+  const { projectId, id: sprintId } = req.params;
+  const existing = db.prepare("SELECT * FROM backlog_sprints WHERE id = ? AND project_id = ?").get(sprintId, decodeURIComponent(projectId));
+  if (!existing) return res.status(404).json({ error: "sprint not found" });
+  const allowed = ["name", "priority", "status", "sort_order"];
+  const updates = [];
+  const values = [];
+  for (const key of allowed) {
+    if (key in req.body) { updates.push(`${key} = ?`); values.push(req.body[key]); }
+  }
+  if (updates.length === 0) return res.status(400).json({ error: "no valid fields to update" });
+  values.push(sprintId);
+  db.prepare(`UPDATE backlog_sprints SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  const sprint = db.prepare("SELECT * FROM backlog_sprints WHERE id = ?").get(sprintId);
+  res.json(sprint);
+});
+
+// GET /api/backlogs/:projectId/items — list items for a sprint
+app.get("/api/backlogs/:projectId/items", (req, res) => {
+  const projectId = decodeURIComponent(req.params.projectId);
+  if (!projectId || projectId.includes("..")) return res.status(400).json({ error: "invalid project id" });
+  const { sprint_id } = req.query;
+  let rows;
+  if (sprint_id) {
+    rows = db.prepare(
+      "SELECT i.* FROM backlog_items i JOIN backlog_sprints s ON i.sprint_id = s.id WHERE s.project_id = ? AND i.sprint_id = ? ORDER BY i.sort_order ASC"
+    ).all(projectId, sprint_id);
+  } else {
+    rows = db.prepare(
+      "SELECT i.* FROM backlog_items i JOIN backlog_sprints s ON i.sprint_id = s.id WHERE s.project_id = ? ORDER BY i.sort_order ASC"
+    ).all(projectId);
+  }
+  res.json({ items: rows });
+});
+
+// POST /api/backlogs/:projectId/items — create item
+app.post("/api/backlogs/:projectId/items", (req, res) => {
+  const projectId = decodeURIComponent(req.params.projectId);
+  if (!projectId || projectId.includes("..")) return res.status(400).json({ error: "invalid project id" });
+  const { sprint_id, text, priority, branch } = req.body;
+  if (!sprint_id) return res.status(400).json({ error: "sprint_id is required" });
+  if (!text || typeof text !== "string") return res.status(400).json({ error: "text is required" });
+  // Verify sprint belongs to project
+  const sprint = db.prepare("SELECT id FROM backlog_sprints WHERE id = ? AND project_id = ?").get(sprint_id, projectId);
+  if (!sprint) return res.status(404).json({ error: "sprint not found for this project" });
+  const maxOrder = db.prepare("SELECT MAX(sort_order) as mx FROM backlog_items WHERE sprint_id = ?").get(sprint_id);
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO backlog_items (id, sprint_id, text, priority, branch, sort_order) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(id, sprint_id, text, priority || null, branch || null, (maxOrder?.mx ?? -1) + 1);
+  const item = db.prepare("SELECT * FROM backlog_items WHERE id = ?").get(id);
+  res.status(201).json(item);
+});
+
+// PATCH /api/backlogs/:projectId/items/:id — update item
+app.patch("/api/backlogs/:projectId/items/:id", (req, res) => {
+  const { id: itemId } = req.params;
+  const projectId = decodeURIComponent(req.params.projectId);
+  const existing = db.prepare(
+    "SELECT i.* FROM backlog_items i JOIN backlog_sprints s ON i.sprint_id = s.id WHERE i.id = ? AND s.project_id = ?"
+  ).get(itemId, projectId);
+  if (!existing) return res.status(404).json({ error: "item not found" });
+  const allowed = ["text", "status", "priority", "branch", "assigned_job_id", "sort_order", "external_id"];
+  const updates = [];
+  const values = [];
+  for (const key of allowed) {
+    if (key in req.body) { updates.push(`${key} = ?`); values.push(req.body[key]); }
+  }
+  if (updates.length === 0) return res.status(400).json({ error: "no valid fields to update" });
+  values.push(itemId);
+  db.prepare(`UPDATE backlog_items SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  const item = db.prepare("SELECT * FROM backlog_items WHERE id = ?").get(itemId);
+  res.json(item);
+});
+
+// GET /api/backlogs/:projectId/items/:id/ac — list acceptance criteria
+app.get("/api/backlogs/:projectId/items/:id/ac", (req, res) => {
+  const { id: itemId } = req.params;
+  const rows = db.prepare(
+    "SELECT * FROM backlog_acceptance_criteria WHERE item_id = ? ORDER BY sort_order ASC"
+  ).all(itemId);
+  res.json({ criteria: rows });
+});
+
+// POST /api/backlogs/:projectId/items/:id/ac — create AC
+app.post("/api/backlogs/:projectId/items/:id/ac", (req, res) => {
+  const { id: itemId } = req.params;
+  const { text } = req.body;
+  if (!text || typeof text !== "string") return res.status(400).json({ error: "text is required" });
+  const existing = db.prepare("SELECT id FROM backlog_items WHERE id = ?").get(itemId);
+  if (!existing) return res.status(404).json({ error: "item not found" });
+  const maxOrder = db.prepare("SELECT MAX(sort_order) as mx FROM backlog_acceptance_criteria WHERE item_id = ?").get(itemId);
+  const id = randomUUID();
+  db.prepare(
+    "INSERT INTO backlog_acceptance_criteria (id, item_id, text, sort_order) VALUES (?, ?, ?, ?)"
+  ).run(id, itemId, text, (maxOrder?.mx ?? -1) + 1);
+  const ac = db.prepare("SELECT * FROM backlog_acceptance_criteria WHERE id = ?").get(id);
+  res.status(201).json(ac);
+});
+
+// PATCH /api/backlogs/:projectId/ac/:id — update AC status
+app.patch("/api/backlogs/:projectId/ac/:id", (req, res) => {
+  const { id: acId } = req.params;
+  const existing = db.prepare("SELECT * FROM backlog_acceptance_criteria WHERE id = ?").get(acId);
+  if (!existing) return res.status(404).json({ error: "acceptance criteria not found" });
+  const { status, text } = req.body;
+  const updates = [];
+  const values = [];
+  if (status && ["pending", "pass", "fail"].includes(status)) { updates.push("status = ?"); values.push(status); }
+  if (typeof text === "string") { updates.push("text = ?"); values.push(text); }
+  if (updates.length === 0) return res.status(400).json({ error: "no valid fields to update" });
+  values.push(acId);
+  db.prepare(`UPDATE backlog_acceptance_criteria SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+  const ac = db.prepare("SELECT * FROM backlog_acceptance_criteria WHERE id = ?").get(acId);
+  res.json(ac);
+});
+
+// ── Backlog migration from markdown ──────────────────────────────────────────
+app.post("/api/backlogs/migrate", (_req, res) => {
+  try {
+    const migrated = migrateAllBacklogs();
+    res.json({ ok: true, migrated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function migrateAllBacklogs() {
+  const results = [];
+  const projectDirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
+    .filter(d => d.isDirectory() && !d.name.startsWith('.') && !d.name.startsWith('_'));
+
+  const migrateOne = db.transaction((projectId) => {
+    const backlogPath = path.join(PROJECTS_DIR, projectId, "backlog.md");
+    if (!fs.existsSync(backlogPath)) return null;
+
+    // Skip if already migrated (has sprints for this project)
+    const existing = db.prepare("SELECT COUNT(*) as cnt FROM backlog_sprints WHERE project_id = ?").get(projectId);
+    if (existing.cnt > 0) return { project: projectId, skipped: true, reason: "already migrated" };
+
+    const content = fs.readFileSync(backlogPath, "utf-8");
+    const lines = content.split("\n");
+
+    let currentSprintName = null;
+    let currentSubsection = null;
+    let sprintId = null;
+    let sprintOrder = 0;
+    let itemOrder = 0;
+    let sprintCount = 0;
+    let itemCount = 0;
+    let acCount = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+
+      // Match ## Sprint headers or ## section headers
+      const h2Match = line.match(/^##\s+(.+)$/);
+      if (h2Match) {
+        const headerText = h2Match[1].trim();
+        // Create a new sprint for each H2 section that contains items
+        currentSprintName = headerText;
+        currentSubsection = null;
+        sprintId = randomUUID();
+        itemOrder = 0;
+
+        // Determine priority from the header
+        let sprintPriority = "medium";
+        if (/priorit[ée]\s*(haute|high|critique)/i.test(headerText)) sprintPriority = "high";
+        else if (/priorit[ée]\s*(basse|low)/i.test(headerText)) sprintPriority = "low";
+
+        // Determine status
+        let sprintStatus = "active";
+        if (/post-mvp|phase\s*2|hors\s*p[ée]rim/i.test(headerText)) sprintStatus = "planning";
+
+        db.prepare(
+          "INSERT INTO backlog_sprints (id, project_id, name, sort_order, priority, status) VALUES (?, ?, ?, ?, ?, ?)"
+        ).run(sprintId, projectId, currentSprintName, sprintOrder++, sprintPriority, sprintStatus);
+        sprintCount++;
+        continue;
+      }
+
+      // Match ### subsection headers
+      const h3Match = line.match(/^###\s+(.+)$/);
+      if (h3Match) {
+        currentSubsection = h3Match[1].trim();
+        continue;
+      }
+
+      // Match backlog items: - [x], - [ ], - [~], - [!]
+      const itemMatch = line.match(/^- \[([x ~!])\]\s*(.+)$/i);
+      if (itemMatch && sprintId) {
+        const marker = itemMatch[1].toLowerCase();
+        let itemText = itemMatch[2].trim();
+
+        // Remove (job:...) suffix
+        const jobMatch = itemText.match(/\(job:([a-f0-9-]+)\)/);
+        const assignedJobId = jobMatch ? jobMatch[1] : null;
+        itemText = itemText.replace(/\s*\(job:[^)]+\)\s*/g, "").trim();
+
+        // Extract external ID like S1-01, S3-04, etc.
+        const extIdMatch = itemText.match(/\*\*([A-Z]\d+-\d+)\*\*/);
+        const externalId = extIdMatch ? extIdMatch[1] : null;
+
+        // Extract priority [P1], [P2], [P3]
+        const prioMatch = itemText.match(/\[(P[123])\]/);
+        const priority = prioMatch ? prioMatch[1] : null;
+
+        // Determine status
+        let status = "todo";
+        if (marker === "x") status = "done";
+        else if (marker === "~") status = "in_progress";
+        else if (marker === "!") status = "blocked";
+
+        // Extract branch from sub-lines
+        const { acceptanceCriteria, branch } = extractSubLines(lines, i);
+
+        const itemId = randomUUID();
+        db.prepare(
+          "INSERT INTO backlog_items (id, sprint_id, external_id, text, status, priority, branch, assigned_job_id, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        ).run(itemId, sprintId, externalId, itemText, status, priority, branch, assignedJobId, itemOrder++);
+        itemCount++;
+
+        // Insert acceptance criteria
+        let acOrder = 0;
+        for (const acText of acceptanceCriteria) {
+          db.prepare(
+            "INSERT INTO backlog_acceptance_criteria (id, item_id, text, sort_order) VALUES (?, ?, ?, ?)"
+          ).run(randomUUID(), itemId, acText, acOrder++);
+          acCount++;
+        }
+      }
+    }
+
+    return { project: projectId, sprints: sprintCount, items: itemCount, acs: acCount };
+  });
+
+  for (const dir of projectDirs) {
+    const result = migrateOne(dir.name);
+    if (result) results.push(result);
+  }
+
+  return results;
+}
+
+// Run migration on startup (idempotent — skips already-migrated projects)
+try {
+  const migrated = migrateAllBacklogs();
+  const actual = migrated.filter(m => !m.skipped);
+  if (actual.length > 0) {
+    console.log("Backlog migration completed:", actual);
+  }
+} catch (err) {
+  console.error("Backlog migration failed:", err.message);
+}
+
+// ── Backlog DB-backed project backlog endpoint ───────────────────────────────
+// This returns backlog data in the same shape as the old markdown-based endpoint
+// so the frontend can switch seamlessly
+app.get("/api/backlogs/:projectId/full", (req, res) => {
+  const projectId = decodeURIComponent(req.params.projectId);
+  if (!projectId || projectId.includes("..")) return res.status(400).json({ error: "invalid project id" });
+
+  const priorityOrder = "CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END";
+  const sprints = db.prepare(
+    `SELECT * FROM backlog_sprints WHERE project_id = ? ORDER BY ${priorityOrder}, sort_order ASC`
+  ).all(projectId);
+
+  const sections = [];
+  const allItems = [];
+  let globalIdx = 0;
+
+  for (const sprint of sprints) {
+    const items = db.prepare(
+      "SELECT * FROM backlog_items WHERE sprint_id = ? ORDER BY sort_order ASC"
+    ).all(sprint.id);
+
+    const sectionItems = items.map((item) => {
+      const acs = db.prepare(
+        "SELECT * FROM backlog_acceptance_criteria WHERE item_id = ? ORDER BY sort_order ASC"
+      ).all(item.id);
+      const mapped = {
+        id: item.id,
+        index: globalIdx,
+        lineIndex: globalIdx,
+        text: item.text,
+        checked: item.status === "done",
+        status: item.status,
+        priority: item.priority,
+        acceptanceCriteria: acs.map(ac => ac.text),
+        branch: item.branch,
+        external_id: item.external_id,
+        sprint_id: item.sprint_id,
+        assigned_job_id: item.assigned_job_id,
+      };
+      allItems.push(mapped);
+      globalIdx++;
+      return mapped;
+    });
+
+    sections.push({
+      header: sprint.name,
+      level: 2,
+      sprint_id: sprint.id,
+      sprint_status: sprint.status,
+      sprint_priority: sprint.priority,
+      items: sectionItems,
+    });
+  }
+
+  res.json({ items: allItems, sections, sprints });
 });
 
 // Kick off initial status fetch

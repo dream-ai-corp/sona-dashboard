@@ -28,6 +28,9 @@ import {
   CircleCheck,
   RotateCcw,
   Mic,
+  Play,
+  Pause,
+  Square,
 } from 'lucide-react';
 
 interface Service {
@@ -50,19 +53,37 @@ interface Project {
 }
 
 interface BacklogItem {
+  id?: string;
   index: number;
   lineIndex: number;
   text: string;
   checked: boolean;
+  status?: 'todo' | 'in_progress' | 'blocked' | 'done';
   priority: 'P1' | 'P2' | 'P3' | null;
   acceptanceCriteria?: string[];
   branch?: string | null;
+  external_id?: string | null;
+  sprint_id?: string;
+  assigned_job_id?: string | null;
 }
 
 interface BacklogSection {
   header: string | null;
   level: number;
   items: BacklogItem[];
+  sprint_id?: string;
+  sprint_status?: 'planning' | 'active' | 'paused' | 'done';
+  sprint_priority?: 'high' | 'medium' | 'low';
+}
+
+interface DbSprint {
+  id: string;
+  project_id: string;
+  name: string;
+  sort_order: number;
+  priority: 'high' | 'medium' | 'low';
+  status: 'planning' | 'active' | 'paused' | 'done';
+  created_at: number;
 }
 
 interface Sprint {
@@ -279,18 +300,39 @@ function AuditModal({
   );
 }
 
+function sprintPriorityBadge(priority?: 'high' | 'medium' | 'low') {
+  const colors: Record<string, { color: string; bg: string; border: string }> = {
+    high: { color: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.3)' },
+    medium: { color: '#fbbf24', bg: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.3)' },
+    low: { color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', border: 'rgba(148,163,184,0.2)' },
+  };
+  return colors[priority ?? 'medium'] ?? colors.medium;
+}
+
 function BacklogHeader({
   header,
   level,
   auditStatus,
   onAuditClick,
+  sprintStatus,
+  sprintPriority,
+  onSprintAction,
 }: {
   header: string;
   level: number;
   auditStatus: AuditStatus;
   onAuditClick: () => void;
+  sprintStatus?: 'planning' | 'active' | 'paused' | 'done';
+  sprintPriority?: 'high' | 'medium' | 'low';
+  onSprintAction?: (action: 'active' | 'paused' | 'planning') => void;
 }) {
   const chip = auditChipStyle(auditStatus);
+  const prioBadge = sprintPriorityBadge(sprintPriority);
+  const sprintControlBtnStyle: React.CSSProperties = {
+    background: 'none', border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: '6px', padding: '3px 6px', cursor: 'pointer',
+    display: 'inline-flex', alignItems: 'center', transition: 'all 150ms',
+  };
   return (
     <div
       data-testid="backlog-section-header"
@@ -319,6 +361,55 @@ function BacklogHeader({
       >
         {header}
       </span>
+      {sprintPriority && (
+        <span style={{
+          fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '10px',
+          background: prioBadge.bg, color: prioBadge.color,
+          border: `1px solid ${prioBadge.border}`,
+          textTransform: 'uppercase', letterSpacing: '0.06em',
+        }}>
+          {sprintPriority}
+        </span>
+      )}
+      {sprintStatus && (
+        <span style={{
+          fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '10px',
+          background: sprintStatus === 'active' ? 'rgba(34,197,94,0.1)' : sprintStatus === 'paused' ? 'rgba(251,191,36,0.1)' : 'rgba(100,116,139,0.1)',
+          color: sprintStatus === 'active' ? '#4ade80' : sprintStatus === 'paused' ? '#fbbf24' : '#94a3b8',
+          border: `1px solid ${sprintStatus === 'active' ? 'rgba(34,197,94,0.25)' : sprintStatus === 'paused' ? 'rgba(251,191,36,0.25)' : 'rgba(100,116,139,0.2)'}`,
+          textTransform: 'uppercase', letterSpacing: '0.06em',
+        }}>
+          {sprintStatus}
+        </span>
+      )}
+      {onSprintAction && (
+        <div style={{ display: 'flex', gap: '4px', marginLeft: '4px' }}>
+          <button
+            onClick={() => onSprintAction('active')}
+            title="Activer le sprint"
+            data-testid="sprint-play"
+            style={{ ...sprintControlBtnStyle, color: sprintStatus === 'active' ? '#4ade80' : '#475569' }}
+          >
+            <Play size={11} />
+          </button>
+          <button
+            onClick={() => onSprintAction('paused')}
+            title="Mettre en pause"
+            data-testid="sprint-pause"
+            style={{ ...sprintControlBtnStyle, color: sprintStatus === 'paused' ? '#fbbf24' : '#475569' }}
+          >
+            <Pause size={11} />
+          </button>
+          <button
+            onClick={() => onSprintAction('planning')}
+            title="Arrêter (planning)"
+            data-testid="sprint-stop"
+            style={{ ...sprintControlBtnStyle, color: sprintStatus === 'planning' ? '#94a3b8' : '#475569' }}
+          >
+            <Square size={11} />
+          </button>
+        </div>
+      )}
       <button
         onClick={onAuditClick}
         title={chip.label}
@@ -750,16 +841,29 @@ export default function ProjectDetailPage() {
     }
   }, [id]);
 
+  const [dbSprints, setDbSprints] = useState<DbSprint[]>([]);
+
   const fetchBacklog = useCallback(async () => {
     setLoadingBacklog(true);
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/backlog`);
-      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; error?: string };
+      const res = await fetch(`/api/backlogs/${encodeURIComponent(id)}/full`);
+      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; sprints?: DbSprint[]; error?: string };
       if (data.error) throw new Error(data.error);
       setItems(data.items ?? []);
       setSections(data.sections ?? []);
+      setDbSprints(data.sprints ?? []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load backlog');
+      // Fallback to old markdown endpoint if DB endpoint fails
+      try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(id)}/backlog`);
+        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; error?: string };
+        if (!data.error) {
+          setItems(data.items ?? []);
+          setSections(data.sections ?? []);
+        }
+      } catch {
+        setError(e instanceof Error ? e.message : 'Failed to load backlog');
+      }
     } finally {
       setLoadingBacklog(false);
     }
@@ -819,9 +923,9 @@ export default function ProjectDetailPage() {
     // Silent auto-refresh every 5s — backlog and jobs can change while a daemon job runs
     const silentRefreshBacklog = async () => {
       try {
-        const res = await fetch(`/api/projects/${encodeURIComponent(id)}/backlog`);
-        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; error?: string };
-        if (!data.error) { setItems(data.items ?? []); setSections(data.sections ?? []); }
+        const res = await fetch(`/api/backlogs/${encodeURIComponent(id)}/full`);
+        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; sprints?: DbSprint[]; error?: string };
+        if (!data.error) { setItems(data.items ?? []); setSections(data.sections ?? []); setDbSprints(data.sprints ?? []); }
       } catch {}
     };
     const silentRefreshJobs = async () => {
@@ -845,17 +949,32 @@ export default function ProjectDetailPage() {
   const handleToggle = async (item: BacklogItem) => {
     setSaving(true);
     try {
-      const res = await fetch(
-        `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ checked: !item.checked }),
-        },
-      );
-      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
-      if (data.items) setItems(data.items);
-      if (data.sections) setSections(data.sections);
+      if (item.id) {
+        // DB-backed item
+        const newStatus = item.checked ? 'todo' : 'done';
+        await fetch(
+          `/api/backlogs/${encodeURIComponent(id)}/items/${item.id}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: newStatus }),
+          },
+        );
+        await fetchBacklog();
+      } else {
+        // Legacy markdown fallback
+        const res = await fetch(
+          `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ checked: !item.checked }),
+          },
+        );
+        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
+        if (data.items) setItems(data.items);
+        if (data.sections) setSections(data.sections);
+      }
     } finally {
       setSaving(false);
     }
@@ -864,17 +983,29 @@ export default function ProjectDetailPage() {
   const handleEdit = async (item: BacklogItem, text: string) => {
     setSaving(true);
     try {
-      const res = await fetch(
-        `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
-        },
-      );
-      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
-      if (data.items) setItems(data.items);
-      if (data.sections) setSections(data.sections);
+      if (item.id) {
+        await fetch(
+          `/api/backlogs/${encodeURIComponent(id)}/items/${item.id}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+          },
+        );
+        await fetchBacklog();
+      } else {
+        const res = await fetch(
+          `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+          },
+        );
+        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
+        if (data.items) setItems(data.items);
+        if (data.sections) setSections(data.sections);
+      }
     } finally {
       setSaving(false);
     }
@@ -883,17 +1014,46 @@ export default function ProjectDetailPage() {
   const handlePriorityChange = async (item: BacklogItem, priority: 'P1' | 'P2' | 'P3' | null) => {
     setSaving(true);
     try {
-      const res = await fetch(
-        `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
+      if (item.id) {
+        await fetch(
+          `/api/backlogs/${encodeURIComponent(id)}/items/${item.id}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ priority }),
+          },
+        );
+        await fetchBacklog();
+      } else {
+        const res = await fetch(
+          `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ priority }),
+          },
+        );
+        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
+        if (data.items) setItems(data.items);
+        if (data.sections) setSections(data.sections);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSprintAction = async (sprintId: string, action: 'active' | 'paused' | 'planning') => {
+    setSaving(true);
+    try {
+      await fetch(
+        `/api/backlogs/${encodeURIComponent(id)}/sprints/${sprintId}`,
         {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ priority }),
+          body: JSON.stringify({ status: action }),
         },
       );
-      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
-      if (data.items) setItems(data.items);
-      if (data.sections) setSections(data.sections);
+      await fetchBacklog();
     } finally {
       setSaving(false);
     }
@@ -904,14 +1064,30 @@ export default function ProjectDetailPage() {
     if (!text) return;
     setSaving(true);
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/backlog`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
-      if (data.items) setItems(data.items);
-      if (data.sections) setSections(data.sections);
+      if (dbSprints.length > 0) {
+        // Add to first active sprint, or first sprint if none active
+        const activeSprint = dbSprints.find(s => s.status === 'active') ?? dbSprints[0];
+        await fetch(`/api/backlogs/${encodeURIComponent(id)}/items`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sprint_id: activeSprint.id, text }),
+        });
+        await fetchBacklog();
+      } else {
+        // Fallback: create a default sprint first, then add item
+        const sprintRes = await fetch(`/api/backlogs/${encodeURIComponent(id)}/sprints`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Backlog', priority: 'medium' }),
+        });
+        const sprint = await sprintRes.json();
+        await fetch(`/api/backlogs/${encodeURIComponent(id)}/items`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sprint_id: sprint.id, text }),
+        });
+        await fetchBacklog();
+      }
       setNewItemText('');
     } finally {
       setSaving(false);
@@ -1601,6 +1777,9 @@ export default function ProjectDetailPage() {
                           level={section.level}
                           auditStatus={sprintAuditStatus}
                           onAuditClick={() => setAuditModal({ sprint: section.header!, reports: sprintAudits })}
+                          sprintStatus={section.sprint_status}
+                          sprintPriority={section.sprint_priority}
+                          onSprintAction={section.sprint_id ? (action) => handleSprintAction(section.sprint_id!, action) : undefined}
                         />
                       )}
                       {sOpen.length > 0 && (
