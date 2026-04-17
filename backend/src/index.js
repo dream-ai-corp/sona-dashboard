@@ -78,6 +78,19 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS audit_reports (
+    id TEXT PRIMARY KEY,
+    project TEXT NOT NULL,
+    sprint TEXT NOT NULL,
+    item_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('pass', 'partial', 'fail')),
+    detail TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
+  );
+  CREATE INDEX IF NOT EXISTS idx_audit_project_sprint ON audit_reports(project, sprint);
+`);
+
 // Prepared statements
 const upsertJob = db.prepare(`
   INSERT INTO jobs (id, goal, status, project, started_at, completed_at, result, exit_code, mtime)
@@ -1858,6 +1871,72 @@ app.post("/api/generate/image", async (req, res) => {
     console.error("[generate/image] Replicate error:", err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// ── Audit reports ─────────────────────────────────────────────────────────────
+app.get("/api/audits", (req, res) => {
+  const { project, sprint } = req.query;
+  let query = "SELECT * FROM audit_reports WHERE 1=1";
+  const params = [];
+  if (project) { query += " AND project = ?"; params.push(project); }
+  if (sprint)  { query += " AND sprint = ?";  params.push(sprint); }
+  query += " ORDER BY created_at DESC";
+  const rows = db.prepare(query).all(...params);
+  res.json({ audits: rows });
+});
+
+app.get("/api/audits/summary", (req, res) => {
+  const { project } = req.query;
+  let query = `
+    SELECT project, sprint,
+      SUM(CASE WHEN status = 'fail'    THEN 1 ELSE 0 END) AS fails,
+      SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END) AS partials,
+      SUM(CASE WHEN status = 'pass'    THEN 1 ELSE 0 END) AS passes,
+      COUNT(*) AS total,
+      MAX(created_at) AS last_audit_at
+    FROM audit_reports
+  `;
+  const params = [];
+  if (project) { query += " WHERE project = ?"; params.push(project); }
+  query += " GROUP BY project, sprint ORDER BY project, last_audit_at DESC";
+  const rows = db.prepare(query).all(...params);
+  // Compute overall status per sprint
+  const summaries = rows.map((r) => ({
+    project: r.project,
+    sprint: r.sprint,
+    status: r.fails > 0 ? "fail" : r.partials > 0 ? "partial" : "pass",
+    fails: r.fails,
+    partials: r.partials,
+    passes: r.passes,
+    total: r.total,
+    last_audit_at: r.last_audit_at,
+  }));
+  res.json({ summaries });
+});
+
+app.post("/api/audits", (req, res) => {
+  const { project, sprint, item_id, status, detail } = req.body ?? {};
+  if (!project || typeof project !== "string") return res.status(400).json({ error: "project required" });
+  if (!sprint  || typeof sprint  !== "string") return res.status(400).json({ error: "sprint required" });
+  const validStatuses = ["pass", "partial", "fail"];
+  if (!status || !validStatuses.includes(status)) {
+    return res.status(400).json({ error: "status must be pass, partial, or fail" });
+  }
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO audit_reports (id, project, sprint, item_id, status, detail)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, project.trim(), sprint.trim(), item_id ?? null, status, detail ?? null);
+  const row = db.prepare("SELECT * FROM audit_reports WHERE id = ?").get(id);
+  res.status(201).json({ audit: row });
+});
+
+app.delete("/api/audits/:id", (req, res) => {
+  const { id } = req.params;
+  const existing = db.prepare("SELECT id FROM audit_reports WHERE id = ?").get(id);
+  if (!existing) return res.status(404).json({ error: "audit not found" });
+  db.prepare("DELETE FROM audit_reports WHERE id = ?").run(id);
+  res.json({ ok: true });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
