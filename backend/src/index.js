@@ -1294,6 +1294,92 @@ app.post("/api/recurring-jobs/:id/run", async (req, res) => {
   }
 });
 
+// ── Image Generation ──────────────────────────────────────────────────────────
+// POST /api/generate/image
+// Body: { prompt, model, ratio }
+// Returns: { ok, imageUrl } or { ok: false, error }
+//
+// Supported backends (via env):
+//   REPLICATE_API_TOKEN → uses Replicate API (FLUX.1-schnell, SDXL, ByteDance SDXL-Lightning)
+// If no token is configured, returns a placeholder so the UI still works in dev.
+
+const REPLICATE_TOKEN = process.env.REPLICATE_API_TOKEN || "";
+
+const MODEL_IDS = {
+  "flux-schnell":    "black-forest-labs/flux-schnell",
+  "sdxl":            "stability-ai/sdxl:7762fd07cf82c948538e41f63f77d685e02b063e37291fae01fac53a39f3b80",
+  "sdxl-lightning":  "bytedance/sdxl-lightning-4step:5f24084160c9089501c1b3545d9be3c27883ae2239b6f412990e82d4a6210f8",
+  "flux-dev":        "black-forest-labs/flux-dev",
+};
+
+const RATIO_TO_SIZE = {
+  "1:1":  { width: 1024, height: 1024 },
+  "16:9": { width: 1344, height: 768  },
+  "9:16": { width: 768,  height: 1344 },
+  "4:3":  { width: 1152, height: 896  },
+  "3:4":  { width: 896,  height: 1152 },
+};
+
+async function pollReplicate(predictionId, token, maxWaitMs = 120000) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const r = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = await r.json();
+    if (data.status === "succeeded") return data.output;
+    if (data.status === "failed" || data.status === "canceled") throw new Error(data.error || "Prediction failed");
+  }
+  throw new Error("Timed out waiting for image generation");
+}
+
+app.post("/api/generate/image", async (req, res) => {
+  const { prompt, model = "flux-schnell", ratio = "1:1" } = req.body || {};
+  if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
+    return res.status(400).json({ ok: false, error: "prompt is required" });
+  }
+
+  const size = RATIO_TO_SIZE[ratio] || RATIO_TO_SIZE["1:1"];
+
+  // No token → return a placeholder SVG (useful in dev without API keys)
+  if (!REPLICATE_TOKEN) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}"><rect width="100%" height="100%" fill="#1e1b4b"/><text x="50%" y="50%" font-family="monospace" font-size="32" fill="#a78bfa" text-anchor="middle" dominant-baseline="middle">[dev] ${encodeURIComponent(prompt.slice(0, 40))}</text></svg>`;
+    const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+    return res.json({ ok: true, imageUrl: dataUrl, model, ratio, prompt, dev: true });
+  }
+
+  const modelId = MODEL_IDS[model] || MODEL_IDS["flux-schnell"];
+  const input = { prompt: prompt.trim(), width: size.width, height: size.height, num_outputs: 1 };
+
+  // ByteDance Lightning uses num_inference_steps
+  if (model === "sdxl-lightning") input.num_inference_steps = 4;
+
+  try {
+    const createRes = await fetch("https://api.replicate.com/v1/predictions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${REPLICATE_TOKEN}`, "Content-Type": "application/json", "Prefer": "wait" },
+      body: JSON.stringify({ version: modelId.includes(":") ? modelId.split(":")[1] : undefined, model: modelId.includes(":") ? undefined : modelId, input }),
+      signal: AbortSignal.timeout(30000),
+    });
+    const prediction = await createRes.json();
+
+    if (prediction.error) throw new Error(prediction.error);
+
+    let output = prediction.output;
+    // If not done immediately, poll
+    if (!output && prediction.id) output = await pollReplicate(prediction.id, REPLICATE_TOKEN);
+    if (!output) throw new Error("No output from model");
+
+    const imageUrl = Array.isArray(output) ? output[0] : output;
+    res.json({ ok: true, imageUrl, model, ratio, prompt });
+  } catch (err) {
+    console.error("[generate/image] error:", err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 syncFromFilesystem();
 
