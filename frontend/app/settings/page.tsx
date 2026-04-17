@@ -12,6 +12,12 @@ import {
   Volume2,
   RefreshCw,
   QrCode,
+  Zap,
+  Eye,
+  EyeOff,
+  CheckCircle,
+  XCircle,
+  Loader,
 } from 'lucide-react';
 
 const SONA_API = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
@@ -312,6 +318,434 @@ function GeneralTab() {
   );
 }
 
+interface ORModel {
+  id: string;
+  name: string;
+  isFree: boolean;
+  modality: string | null;
+  contextLength: number | null;
+}
+
+interface ORConfig {
+  configured: boolean;
+  apiKeyMasked: string | null;
+  defaults: { image: string | null; video: string | null; audio: string | null };
+}
+
+type TestState = 'idle' | 'testing' | 'ok' | 'error';
+
+function OpenRouterCard() {
+  const [config, setConfig] = useState<ORConfig | null>(null);
+  const [models, setModels] = useState<ORModel[]>([]);
+  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [testState, setTestState] = useState<TestState>('idle');
+  const [testMsg, setTestMsg] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [defaults, setDefaults] = useState<{ image: string; video: string; audio: string }>({
+    image: '',
+    video: '',
+    audio: '',
+  });
+
+  const fetchConfig = useCallback(async () => {
+    try {
+      const res = await fetch('/api/integrations/openrouter/config', { cache: 'no-store' });
+      if (res.ok) {
+        const data: ORConfig = await res.json();
+        setConfig(data);
+        setDefaults({
+          image: data.defaults.image ?? '',
+          video: data.defaults.video ?? '',
+          audio: data.defaults.audio ?? '',
+        });
+      }
+    } catch {}
+  }, []);
+
+  const fetchModels = useCallback(async () => {
+    setLoadingModels(true);
+    try {
+      const res = await fetch('/api/integrations/openrouter/models', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok) setModels(data.models ?? []);
+      }
+    } catch {}
+    setLoadingModels(false);
+  }, []);
+
+  useEffect(() => {
+    fetchConfig();
+  }, [fetchConfig]);
+
+  useEffect(() => {
+    if (config?.configured) fetchModels();
+  }, [config?.configured, fetchModels]);
+
+  const handleSaveKey = async () => {
+    if (!apiKeyInput.trim()) return;
+    setSaving(true);
+    try {
+      const res = await fetch('/api/integrations/openrouter/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: apiKeyInput.trim() }),
+      });
+      if (res.ok) {
+        setApiKeyInput('');
+        await fetchConfig();
+        await fetchModels();
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    setSaving(true);
+    try {
+      await fetch('/api/integrations/openrouter/config', { method: 'DELETE' });
+      setModels([]);
+      setDefaults({ image: '', video: '', audio: '' });
+      await fetchConfig();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    setTestState('testing');
+    setTestMsg('');
+    try {
+      const res = await fetch('/api/integrations/openrouter/test', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        setTestState('ok');
+        setTestMsg(`${data.modelCount} modèles disponibles`);
+      } else {
+        setTestState('error');
+        setTestMsg(data.error ?? 'Échec de la connexion');
+      }
+    } catch (e: unknown) {
+      setTestState('error');
+      setTestMsg(e instanceof Error ? e.message : 'Erreur réseau');
+    }
+  };
+
+  const handleSaveDefaults = async () => {
+    setSaving(true);
+    try {
+      await fetch('/api/integrations/openrouter/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ defaults }),
+      });
+      await fetchConfig();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const isConfigured = config?.configured ?? false;
+
+  // Group models by free/paid
+  const freeModels = models.filter((m) => m.isFree);
+  const paidModels = models.filter((m) => !m.isFree);
+
+  const modelOptions = [
+    { value: '', label: '— aucun —' },
+    ...(freeModels.length ? [{ value: '__group_free', label: '── Gratuits ──', disabled: true }] : []),
+    ...freeModels.map((m) => ({ value: m.id, label: m.name })),
+    ...(paidModels.length ? [{ value: '__group_paid', label: '── Payants ──', disabled: true }] : []),
+    ...paidModels.map((m) => ({ value: m.id, label: m.name })),
+  ];
+
+  return (
+    <div
+      className="glass"
+      style={{
+        borderRadius: '16px',
+        padding: '24px',
+        borderColor: isConfigured ? 'rgba(167,139,250,0.2)' : undefined,
+      }}
+    >
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', marginBottom: '20px' }}>
+        <div
+          style={{
+            width: '48px',
+            height: '48px',
+            borderRadius: '12px',
+            background: 'rgba(167,139,250,0.12)',
+            border: '1px solid rgba(167,139,250,0.25)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
+        >
+          <Zap size={22} color="#a78bfa" />
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '4px' }}>
+            <span style={{ fontSize: '15px', fontWeight: 600, color: '#f1f5f9' }}>OpenRouter</span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                padding: '3px 10px',
+                borderRadius: '20px',
+                background: isConfigured ? 'rgba(167,139,250,0.1)' : 'rgba(100,116,139,0.1)',
+                color: isConfigured ? '#a78bfa' : '#64748b',
+                border: `1px solid ${isConfigured ? 'rgba(167,139,250,0.25)' : 'rgba(100,116,139,0.25)'}`,
+              }}
+            >
+              {isConfigured ? 'Connecté' : 'Non configuré'}
+            </span>
+          </div>
+          <p style={{ fontSize: '12px', color: '#64748b', margin: 0 }}>
+            {isConfigured
+              ? `Clé : ${config?.apiKeyMasked} — accès aux modèles LLM/image/audio`
+              : 'Entrez votre clé API OpenRouter pour accéder aux modèles gratuits et payants.'}
+          </p>
+        </div>
+
+        {isConfigured && (
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <button
+              onClick={handleTest}
+              disabled={testState === 'testing' || saving}
+              style={{
+                padding: '8px 14px',
+                borderRadius: '8px',
+                border: '1px solid rgba(103,232,249,0.3)',
+                background: 'rgba(103,232,249,0.08)',
+                color: '#67e8f9',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: testState === 'testing' ? 'not-allowed' : 'pointer',
+                fontFamily: 'inherit',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                opacity: testState === 'testing' ? 0.6 : 1,
+              }}
+            >
+              {testState === 'testing' ? (
+                <Loader size={12} style={{ animation: 'spin 1s linear infinite' }} />
+              ) : testState === 'ok' ? (
+                <CheckCircle size={12} color="#4ade80" />
+              ) : testState === 'error' ? (
+                <XCircle size={12} color="#f87171" />
+              ) : (
+                <CheckCircle size={12} />
+              )}
+              Tester
+            </button>
+            <button
+              onClick={handleDisconnect}
+              disabled={saving}
+              style={{
+                padding: '8px 14px',
+                borderRadius: '8px',
+                border: '1px solid rgba(239,68,68,0.35)',
+                background: 'rgba(239,68,68,0.1)',
+                color: '#f87171',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: saving ? 'not-allowed' : 'pointer',
+                fontFamily: 'inherit',
+                opacity: saving ? 0.6 : 1,
+              }}
+            >
+              Déconnecter
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Test result */}
+      {testState !== 'idle' && testMsg && (
+        <div
+          style={{
+            marginBottom: '16px',
+            padding: '8px 14px',
+            borderRadius: '8px',
+            background: testState === 'ok' ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
+            border: `1px solid ${testState === 'ok' ? 'rgba(34,197,94,0.25)' : 'rgba(239,68,68,0.25)'}`,
+            color: testState === 'ok' ? '#4ade80' : '#f87171',
+            fontSize: '12px',
+          }}
+        >
+          {testMsg}
+        </div>
+      )}
+
+      {/* API key input */}
+      {!isConfigured && (
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '16px' }}>
+          <div style={{ position: 'relative', flex: 1 }}>
+            <input
+              type={showKey ? 'text' : 'password'}
+              value={apiKeyInput}
+              onChange={(e) => setApiKeyInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSaveKey()}
+              placeholder="sk-or-v1-..."
+              style={{
+                width: '100%',
+                padding: '10px 40px 10px 12px',
+                borderRadius: '8px',
+                background: 'rgba(15,15,26,0.8)',
+                border: '1px solid rgba(255,255,255,0.1)',
+                color: '#e2e8f0',
+                fontFamily: 'monospace',
+                fontSize: '13px',
+                outline: 'none',
+                boxSizing: 'border-box',
+              }}
+            />
+            <button
+              onClick={() => setShowKey((v) => !v)}
+              style={{
+                position: 'absolute',
+                right: '10px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                color: '#64748b',
+                padding: 0,
+                display: 'flex',
+              }}
+            >
+              {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+            </button>
+          </div>
+          <button
+            onClick={handleSaveKey}
+            disabled={saving || !apiKeyInput.trim()}
+            style={{
+              padding: '10px 18px',
+              borderRadius: '8px',
+              border: '1px solid rgba(167,139,250,0.35)',
+              background: 'rgba(167,139,250,0.15)',
+              color: '#a78bfa',
+              fontSize: '12px',
+              fontWeight: 600,
+              cursor: saving || !apiKeyInput.trim() ? 'not-allowed' : 'pointer',
+              fontFamily: 'inherit',
+              opacity: saving || !apiKeyInput.trim() ? 0.5 : 1,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {saving ? 'Sauvegarde…' : 'Sauvegarder'}
+          </button>
+        </div>
+      )}
+
+      {/* Model selection */}
+      {isConfigured && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px' }}>
+            <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>
+              Modèle par défaut
+            </span>
+            <button
+              onClick={fetchModels}
+              disabled={loadingModels}
+              title="Rafraîchir la liste des modèles"
+              style={{
+                padding: '4px 8px',
+                borderRadius: '6px',
+                border: '1px solid rgba(255,255,255,0.08)',
+                background: 'transparent',
+                color: '#64748b',
+                cursor: loadingModels ? 'not-allowed' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '11px',
+              }}
+            >
+              <RefreshCw size={11} style={{ animation: loadingModels ? 'spin 1s linear infinite' : 'none' }} />
+              {loadingModels ? 'Chargement…' : `${models.length} modèles`}
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {(['image', 'video', 'audio'] as const).map((type) => (
+              <div key={type} style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span
+                  style={{
+                    fontSize: '11px',
+                    color: '#64748b',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    minWidth: '48px',
+                  }}
+                >
+                  {type}
+                </span>
+                <select
+                  value={defaults[type]}
+                  onChange={(e) => setDefaults((d) => ({ ...d, [type]: e.target.value }))}
+                  disabled={loadingModels || models.length === 0}
+                  style={{
+                    flex: 1,
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    background: 'rgba(15,15,26,0.8)',
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    color: '#e2e8f0',
+                    fontFamily: 'monospace',
+                    fontSize: '12px',
+                  }}
+                >
+                  {modelOptions.map((opt) =>
+                    'disabled' in opt && opt.disabled ? (
+                      <option key={opt.value} value={opt.value} disabled>
+                        {opt.label}
+                      </option>
+                    ) : (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    )
+                  )}
+                </select>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end' }}>
+            <button
+              onClick={handleSaveDefaults}
+              disabled={saving}
+              style={{
+                padding: '8px 18px',
+                borderRadius: '8px',
+                border: '1px solid rgba(167,139,250,0.35)',
+                background: 'rgba(167,139,250,0.15)',
+                color: '#a78bfa',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: saving ? 'not-allowed' : 'pointer',
+                fontFamily: 'inherit',
+                opacity: saving ? 0.5 : 1,
+              }}
+            >
+              {saving ? 'Sauvegarde…' : 'Sauvegarder les préférences'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ConnectionsTab() {
   const [wa, setWa] = useState<WhatsAppState>({ status: 'LOADING' });
   const [toggling, setToggling] = useState(false);
@@ -356,6 +790,9 @@ function ConnectionsTab() {
       <p style={{ fontSize: '13px', color: '#64748b', margin: 0 }}>
         Manage external service integrations. Connect or disconnect services to extend Sona&apos;s capabilities.
       </p>
+
+      {/* OpenRouter tile */}
+      <OpenRouterCard />
 
       {/* WhatsApp tile */}
       <div
