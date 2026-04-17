@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Video, Download, Loader2, AlertCircle, Wand2 } from 'lucide-react';
 
 interface VideoModel {
@@ -77,21 +77,6 @@ export default function VideoGenModal() {
   const [progress, setProgress] = useState(0);
   const [progressMsg, setProgressMsg] = useState('');
   const esRef = useRef<EventSource | null>(null);
-
-  // Fetch available models from backend (Kling/Veo appear only when keys are configured)
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/models/video')
-      .then((r) => r.ok ? r.json() : null)
-      .then((data: { ok: boolean; models: VideoModel[] } | null) => {
-        if (!cancelled && data?.ok && Array.isArray(data.models) && data.models.length > 0) {
-          setModels(data.models);
-          setModel((prev) => data.models.some((m) => m.id === prev) ? prev : data.models[0].id);
-        }
-      })
-      .catch(() => { /* keep fallback */ });
-    return () => { cancelled = true; };
-  }, []);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) return;
