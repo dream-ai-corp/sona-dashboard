@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { ImageIcon, Download, Loader2, AlertCircle, Wand2 } from 'lucide-react';
 
 interface Model {
@@ -10,14 +10,10 @@ interface Model {
   tier: 'free' | 'paid';
 }
 
-const MODELS: Model[] = [
-  // Free models (via Replicate)
-  { id: 'flux-schnell',   label: 'FLUX.1 Schnell',      provider: 'Black Forest Labs', tier: 'free' },
-  { id: 'sdxl',           label: 'Stable Diffusion XL', provider: 'Stability AI',      tier: 'free' },
-  { id: 'sdxl-lightning', label: 'SDXL Lightning',      provider: 'ByteDance',         tier: 'free' },
-  // Paid models (require API key in Settings → Connexions)
-  { id: 'dall-e-3',       label: 'DALL·E 3',            provider: 'OpenAI',            tier: 'paid' },
-  { id: 'midjourney',     label: 'Midjourney',           provider: 'Midjourney',        tier: 'paid' },
+const FALLBACK_MODELS: Model[] = [
+  { id: 'flux-schnell',   label: 'FLUX.1 Schnell',      provider: 'replicate', tier: 'free' },
+  { id: 'sdxl',           label: 'Stable Diffusion XL', provider: 'replicate', tier: 'free' },
+  { id: 'sdxl-lightning', label: 'SDXL Lightning',      provider: 'replicate', tier: 'free' },
 ];
 
 const RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4'] as const;
@@ -92,6 +88,26 @@ export default function ImageGenModal() {
   const [genState, setGenState] = useState<GenState>('idle');
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [models, setModels] = useState<Model[]>(FALLBACK_MODELS);
+  const [modelsLoading, setModelsLoading] = useState(true);
+
+  // Fetch available models dynamically (OpenRouter + Replicate based on configured keys)
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/models/image')
+      .then((r) => r.json())
+      .then((data: { models?: Model[] }) => {
+        if (!cancelled && data.models && data.models.length > 0) {
+          setModels(data.models);
+          // Auto-select the first free model if available
+          const firstFree = data.models.find((m) => m.tier === 'free');
+          setModel(firstFree?.id ?? data.models[0].id);
+        }
+      })
+      .catch(() => { /* keep fallback */ })
+      .finally(() => { if (!cancelled) setModelsLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) return;
@@ -188,22 +204,42 @@ export default function ImageGenModal() {
             data-testid="image-gen-model"
             value={model}
             onChange={(e) => setModel(e.target.value)}
+            disabled={modelsLoading}
             style={{
               padding: '10px 12px',
               borderRadius: '10px',
               background: 'rgba(15,15,26,0.8)',
               border: '1px solid rgba(255,255,255,0.08)',
-              color: '#e2e8f0',
+              color: modelsLoading ? '#475569' : '#e2e8f0',
               fontFamily: 'inherit',
               fontSize: '13px',
-              cursor: 'pointer',
+              cursor: modelsLoading ? 'wait' : 'pointer',
             }}
           >
-            {MODELS.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label} — {m.provider}{m.tier === 'paid' ? ' (payant)' : ' (gratuit)'}
-              </option>
-            ))}
+            {modelsLoading ? (
+              <option>Chargement des modèles…</option>
+            ) : (
+              <>
+                {models.filter((m) => m.tier === 'free').length > 0 && (
+                  <optgroup label="Gratuits">
+                    {models.filter((m) => m.tier === 'free').map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label} [{m.provider}]
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {models.filter((m) => m.tier === 'paid').length > 0 && (
+                  <optgroup label="Payants">
+                    {models.filter((m) => m.tier === 'paid').map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label} [{m.provider}]
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </>
+            )}
           </select>
         </div>
 
@@ -356,7 +392,7 @@ export default function ImageGenModal() {
           {/* Metadata */}
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
             {[
-              { label: 'Modèle', value: MODELS.find((m) => m.id === model)?.label ?? model },
+              { label: 'Modèle', value: models.find((m) => m.id === model)?.label ?? model },
               { label: 'Ratio', value: ratio },
             ].map(({ label, value }) => (
               <div

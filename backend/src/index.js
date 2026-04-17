@@ -555,6 +555,7 @@ function readProjectMeta(name) {
     tags: raw.tags,
     services: raw.services,
     git: raw.git,
+    urls: raw.urls,
     path: raw.path,
     hasBacklog,
   };
@@ -775,6 +776,49 @@ app.patch("/api/projects/:name/backlog/:index", (req, res) => {
   }
 });
 
+
+// ── Project files (list + download) ──────────────────────────────────────────
+app.get("/api/projects/:name/files", (req, res) => {
+  const name = req.params.name;
+  const projDir = path.join(PROJECTS_DIR, name);
+  if (!fs.existsSync(projDir)) return res.status(404).json({ error: "project not found" });
+
+  const EXTENSIONS = new Set([".md", ".txt", ".pdf", ".csv", ".gs"]);
+  const EXCLUDED_DIRS = new Set(["node_modules", ".git", "jobs", ".next", "dist", "build", "tests", "dashboard", "__pycache__"]);
+  const EXCLUDED_FILES = new Set(["package.json", "package-lock.json", "tsconfig.json", "next.config.ts", "docker-compose.yml", "docker-compose.dev.yml", "Dockerfile", "Dockerfile.dev", "Makefile", ".gitignore", ".env", ".env.example", "README.md"]);
+  const files = [];
+
+  function scan(dir, prefix) {
+    try {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (EXCLUDED_DIRS.has(entry.name)) continue;
+        const full = path.join(dir, entry.name);
+        const rel = prefix ? prefix + "/" + entry.name : entry.name;
+        if (entry.isDirectory()) {
+          scan(full, rel);
+        } else if (EXTENSIONS.has(path.extname(entry.name).toLowerCase()) && !EXCLUDED_FILES.has(entry.name)) {
+          const stat = fs.statSync(full);
+          files.push({ name: rel, fullPath: full, size: stat.size, modified: stat.mtimeMs });
+        }
+      }
+    } catch {}
+  }
+  scan(projDir, "");
+  files.sort((a, b) => b.modified - a.modified);
+  res.json(files);
+});
+
+app.get("/api/projects/:name/files/download", (req, res) => {
+  const name = req.params.name;
+  const file = String(req.query.file || "");
+  if (!file || file.includes("..") || file.startsWith("/")) {
+    return res.status(400).json({ error: "invalid file path" });
+  }
+  const full = path.join(PROJECTS_DIR, name, file);
+  if (!fs.existsSync(full)) return res.status(404).json({ error: "file not found" });
+  res.setHeader("Content-Disposition", "attachment; filename=\"" + path.basename(file) + "\"");
+  res.sendFile(full);
+});
 
 // ── Project brainstorm ────────────────────────────────────────────────────────
 const BRAINSTORM_TEMPLATE = (name) => `# Brainstorm — ${name}
@@ -1396,9 +1440,74 @@ app.post("/api/settings/providers/:provider/test", async (req, res) => {
   }
 });
 
+// ── Image Models ───────────────────────────────────────────────────────────────
+// GET /api/models/image
+// Returns available image generation models based on configured providers.
+// OpenRouter models are fetched dynamically; Replicate models are static.
+
+const REPLICATE_IMAGE_MODELS = [
+  { id: "flux-schnell",   label: "FLUX.1 Schnell",      provider: "replicate", tier: "free" },
+  { id: "sdxl",           label: "Stable Diffusion XL",  provider: "replicate", tier: "free" },
+  { id: "sdxl-lightning", label: "SDXL Lightning",        provider: "replicate", tier: "free" },
+  { id: "flux-dev",       label: "FLUX.1 Dev",            provider: "replicate", tier: "paid" },
+];
+
+app.get("/api/models/image", async (req, res) => {
+  const models = [];
+
+  const replicateKey = getProviderKey("replicate");
+  if (replicateKey) {
+    models.push(...REPLICATE_IMAGE_MODELS);
+  }
+
+  const openrouterKey = getProviderKey("openrouter");
+  if (openrouterKey) {
+    try {
+      const r = await fetch("https://openrouter.ai/api/v1/models", {
+        headers: { Authorization: `Bearer ${openrouterKey}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        const imageModels = (data.data || []).filter((m) => {
+          const modality = m.architecture?.modality || m.architecture?.output_modality || "";
+          const outputModalities = m.architecture?.output_modalities || [];
+          return (
+            modality.includes("->image") ||
+            modality.includes("image") && modality.includes("->") ||
+            outputModalities.includes("image")
+          );
+        });
+        for (const m of imageModels) {
+          const promptPrice = parseFloat(m.pricing?.prompt || "1");
+          const completionPrice = parseFloat(m.pricing?.completion || "1");
+          const isFree = promptPrice === 0 && completionPrice === 0;
+          models.push({
+            id: m.id,
+            label: m.name || m.id,
+            provider: "openrouter",
+            tier: isFree ? "free" : "paid",
+          });
+        }
+      } else {
+        console.error("[models/image] OpenRouter HTTP", r.status);
+      }
+    } catch (err) {
+      console.error("[models/image] OpenRouter fetch failed:", err.message);
+    }
+  }
+
+  // Fallback: return static Replicate list when no providers are configured
+  if (models.length === 0) {
+    models.push(...REPLICATE_IMAGE_MODELS);
+  }
+
+  res.json({ models });
+});
+
 // ── Image Generation ──────────────────────────────────────────────────────────
 // POST /api/generate/image
-// Body: { prompt, model, ratio }
+// Body: { prompt, model, ratio, provider? }
 // Returns: { ok, imageUrl } or { ok: false, error }
 //
 // API keys are read from provider_keys DB table first, then env vars as fallback.
@@ -1446,17 +1555,105 @@ async function pollReplicate(predictionId, token, maxWaitMs = 120000) {
   throw new Error("Timed out waiting for image generation");
 }
 
+// Determine which provider to use for a given model ID
+function resolveImageProvider(model) {
+  if (MODEL_IDS[model]) return "replicate";
+  // OpenRouter models contain a "/" (e.g. "openai/dall-e-3", "stability-ai/sd3")
+  if (model.includes("/")) return "openrouter";
+  return "replicate";
+}
+
+async function generateWithOpenRouter(prompt, model, size, apiKey) {
+  // Try /images/generations first (OpenAI-compatible)
+  const res = await fetch("https://openrouter.ai/api/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://sona.beniben.dev",
+      "X-Title": "Sona Dashboard",
+    },
+    body: JSON.stringify({
+      model,
+      prompt,
+      n: 1,
+      size: `${size.width}x${size.height}`,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+
+  if (res.ok) {
+    const data = await res.json();
+    const item = data.data?.[0];
+    if (item?.url) return { imageUrl: item.url };
+    if (item?.b64_json) return { imageUrl: `data:image/png;base64,${item.b64_json}` };
+  }
+
+  // Fallback: chat completions endpoint (for multimodal models)
+  const chatRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://sona.beniben.dev",
+      "X-Title": "Sona Dashboard",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [{ role: "user", content: `Generate an image: ${prompt}. Dimensions: ${size.width}x${size.height}.` }],
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+
+  if (!chatRes.ok) {
+    const text = await chatRes.text().catch(() => "");
+    let errMsg = `OpenRouter error ${chatRes.status}`;
+    try { errMsg = JSON.parse(text)?.error?.message || errMsg; } catch {}
+    throw new Error(errMsg);
+  }
+
+  const chatData = await chatRes.json();
+  if (chatData.data?.[0]?.url) return { imageUrl: chatData.data[0].url };
+  if (chatData.data?.[0]?.b64_json) return { imageUrl: `data:image/png;base64,${chatData.data[0].b64_json}` };
+
+  const content = chatData.choices?.[0]?.message?.content ?? "";
+  if (content.startsWith("data:image")) return { imageUrl: content };
+  const urlMatch = content.match(/https?:\/\/[^\s"]+\.(png|jpg|jpeg|webp)/i);
+  if (urlMatch) return { imageUrl: urlMatch[0] };
+
+  throw new Error("OpenRouter: le modèle n'a pas retourné d'image. Essayez un autre modèle.");
+}
+
 app.post("/api/generate/image", async (req, res) => {
-  const { prompt, model = "flux-schnell", ratio = "1:1" } = req.body || {};
+  const { prompt, model = "flux-schnell", ratio = "1:1", provider: explicitProvider } = req.body || {};
   if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
     return res.status(400).json({ ok: false, error: "prompt is required" });
   }
 
   const size = RATIO_TO_SIZE[ratio] || RATIO_TO_SIZE["1:1"];
   const replicateKey = getProviderKey("replicate");
+  const openrouterKey = getProviderKey("openrouter");
 
-  // No token → return a placeholder SVG (useful in dev without API keys)
+  // Determine provider: explicit param > model-based detection > fallback to whatever is configured
+  const detectedProvider = explicitProvider || resolveImageProvider(model);
+
+  // OpenRouter path
+  if (detectedProvider === "openrouter" || (!replicateKey && openrouterKey)) {
+    if (!openrouterKey) {
+      return res.status(400).json({ ok: false, error: "Clé OpenRouter non configurée. Ajoutez-la dans Paramètres → Connexions." });
+    }
+    try {
+      const result = await generateWithOpenRouter(prompt.trim(), model, size, openrouterKey);
+      return res.json({ ok: true, ...result, model, ratio, prompt, provider: "openrouter" });
+    } catch (err) {
+      console.error("[generate/image] OpenRouter error:", err.message);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+
+  // Replicate path
   if (!replicateKey) {
+    // Dev placeholder when no keys configured at all
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}"><rect width="100%" height="100%" fill="#1e1b4b"/><text x="50%" y="50%" font-family="monospace" font-size="32" fill="#a78bfa" text-anchor="middle" dominant-baseline="middle">[dev] ${encodeURIComponent(prompt.slice(0, 40))}</text></svg>`;
     const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
     return res.json({ ok: true, imageUrl: dataUrl, model, ratio, prompt, dev: true });
@@ -1464,8 +1661,6 @@ app.post("/api/generate/image", async (req, res) => {
 
   const modelId = MODEL_IDS[model] || MODEL_IDS["flux-schnell"];
   const input = { prompt: prompt.trim(), width: size.width, height: size.height, num_outputs: 1 };
-
-  // ByteDance Lightning uses num_inference_steps
   if (model === "sdxl-lightning") input.num_inference_steps = 4;
 
   try {
@@ -1480,14 +1675,13 @@ app.post("/api/generate/image", async (req, res) => {
     if (prediction.error) throw new Error(prediction.error);
 
     let output = prediction.output;
-    // If not done immediately, poll
     if (!output && prediction.id) output = await pollReplicate(prediction.id, replicateKey);
     if (!output) throw new Error("No output from model");
 
     const imageUrl = Array.isArray(output) ? output[0] : output;
-    res.json({ ok: true, imageUrl, model, ratio, prompt });
+    res.json({ ok: true, imageUrl, model, ratio, prompt, provider: "replicate" });
   } catch (err) {
-    console.error("[generate/image] error:", err.message);
+    console.error("[generate/image] Replicate error:", err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });

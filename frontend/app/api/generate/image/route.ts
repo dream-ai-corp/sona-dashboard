@@ -45,43 +45,49 @@ type GenerateRequest = {
 
 type GenerateResult = { url: string } | { error: string };
 
-/* ─── Model aliases ─────────────────────────────────────────────── */
-const MODEL_ALIASES: Record<string, string> = {
-  // Free — Replicate
-  'flux-schnell':   'black-forest-labs/FLUX.1-schnell',
-  'flux-dev':       'black-forest-labs/FLUX.1-dev',
-  'sdxl':           'stability-ai/sdxl',
-  'sdxl-lightning': 'bytedance/sdxl-lightning-4step',
-  // Paid — OpenAI
-  'dall-e-3':       'openai/dall-e-3',
-  // Paid — Midjourney via OpenRouter (best available substitute)
-  'midjourney':     'openai/dall-e-3',
+/* ─── Model config with provider routing ────────────────────────── */
+type ModelConfig = { id: string; provider: 'replicate' | 'openai' | 'openrouter'; label: string };
+
+const MODELS: Record<string, ModelConfig> = {
+  // Replicate models (free/cheap)
+  'flux-schnell':   { id: 'black-forest-labs/FLUX.1-schnell', provider: 'replicate', label: 'FLUX.1 Schnell (gratuit)' },
+  'sdxl':           { id: 'stability-ai/sdxl', provider: 'replicate', label: 'Stable Diffusion XL (gratuit)' },
+  'sdxl-lightning': { id: 'bytedance/sdxl-lightning-4step', provider: 'replicate', label: 'SDXL Lightning (gratuit)' },
+  // OpenAI direct
+  'dall-e-3':       { id: 'dall-e-3', provider: 'openai', label: 'DALL\u00B7E 3 (payant)' },
+  // OpenRouter image models
+  'gpt-image':      { id: 'openai/gpt-5-image-mini', provider: 'openrouter', label: 'GPT Image Mini (payant)' },
+  'gemini-image':   { id: 'google/gemini-2.5-flash-image', provider: 'openrouter', label: 'Gemini Flash Image (payant)' },
 };
 
-function resolveModel(model: string): string {
-  return MODEL_ALIASES[model] ?? model;
+function resolveModel(model: string): ModelConfig {
+  if (MODELS[model]) return MODELS[model];
+  // Dynamic OpenRouter models have a "/" in their ID (e.g. "openai/dall-e-3")
+  if (model.includes('/')) return { id: model, provider: 'openrouter', label: model };
+  return MODELS['flux-schnell'];
 }
 
 /* ─── Provider dispatch ─────────────────────────────────────────── */
 async function generate(req: GenerateRequest): Promise<GenerateResult> {
   const { prompt, width = 1024, height = 1024 } = req;
-  const model = resolveModel(req.model);
+  const cfg = resolveModel(req.model);
   const keys = await fetchProviderKeys();
 
-  // DALL·E 3 via OpenAI direct
-  if (model.startsWith('openai/') && keys.openai) {
+  // Route to the correct provider based on model config
+  if (cfg.provider === 'openai' && keys.openai) {
     return generateOpenAI(prompt, width, height, keys.openai);
   }
-
-  // OpenRouter (routes to many providers — also handles openai/* if no direct key)
-  if (keys.openrouter) {
-    return generateOpenRouter(prompt, model, width, height, keys.openrouter);
+  if (cfg.provider === 'openrouter' && keys.openrouter) {
+    return generateOpenRouter(prompt, cfg.id, width, height, keys.openrouter);
+  }
+  if (cfg.provider === 'replicate' && keys.replicate) {
+    return generateReplicate(prompt, cfg.id, width, height, keys.replicate);
   }
 
-  // Replicate (FLUX, SDXL, ByteDance Lightning, etc.)
-  if (keys.replicate) {
-    return generateReplicate(prompt, model, width, height, keys.replicate);
-  }
+  // Fallback: try any available provider
+  if (keys.replicate) return generateReplicate(prompt, cfg.id, width, height, keys.replicate);
+  if (keys.openrouter) return generateOpenRouter(prompt, cfg.id, width, height, keys.openrouter);
+  if (keys.openai) return generateOpenAI(prompt, width, height, keys.openai);
 
   return {
     error:
@@ -120,7 +126,7 @@ async function generateOpenAI(
   return { url };
 }
 
-/* ─── OpenRouter ────────────────────────────────────────────────── */
+/* ─── OpenRouter (uses chat completions endpoint with image models) ── */
 async function generateOpenRouter(
   prompt: string,
   model: string,
@@ -128,7 +134,9 @@ async function generateOpenRouter(
   height: number,
   apiKey: string,
 ): Promise<GenerateResult> {
-  const res = await fetch('https://openrouter.ai/api/v1/images/generations', {
+  // OpenRouter doesn't have /images/generations — use chat completions
+  // with image-capable models that return base64 or URLs
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -138,24 +146,47 @@ async function generateOpenRouter(
     },
     body: JSON.stringify({
       model,
-      prompt,
-      n: 1,
-      size: `${width}x${height}`,
+      messages: [
+        {
+          role: 'user',
+          content: `Generate an image: ${prompt}. Dimensions: ${width}x${height}.`,
+        },
+      ],
     }),
     signal: AbortSignal.timeout(120_000),
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    return { error: (err as { error?: { message?: string } }).error?.message ?? `OpenRouter error ${res.status}` };
+    const text = await res.text().catch(() => '');
+    try {
+      const err = JSON.parse(text);
+      return { error: err?.error?.message ?? `OpenRouter error ${res.status}` };
+    } catch {
+      return { error: `OpenRouter error ${res.status}: ${text.slice(0, 200)}` };
+    }
   }
 
-  const data = await res.json() as { data?: Array<{ url?: string; b64_json?: string }> };
-  const item = data.data?.[0];
-  if (!item) return { error: 'OpenRouter: no image in response' };
-  if (item.url) return { url: item.url };
-  if (item.b64_json) return { url: `data:image/png;base64,${item.b64_json}` };
-  return { error: 'OpenRouter: no URL or base64 in response' };
+  const data = await res.json() as {
+    choices?: Array<{ message?: { content?: string } }>;
+    data?: Array<{ url?: string; b64_json?: string }>;
+  };
+
+  // Some image models return data[] (like OpenAI format)
+  if (data.data?.[0]) {
+    const item = data.data[0];
+    if (item.url) return { url: item.url };
+    if (item.b64_json) return { url: `data:image/png;base64,${item.b64_json}` };
+  }
+
+  // Others return base64 in the message content
+  const content = data.choices?.[0]?.message?.content ?? '';
+  if (content.startsWith('data:image')) return { url: content };
+
+  // Try to extract a URL from the response
+  const urlMatch = content.match(/https?:\/\/[^\s"]+\.(png|jpg|jpeg|webp)/i);
+  if (urlMatch) return { url: urlMatch[0] };
+
+  return { error: 'OpenRouter: model did not return an image. Try a different model (e.g. FLUX.1 Schnell via Replicate).' };
 }
 
 /* ─── Replicate ─────────────────────────────────────────────────── */
