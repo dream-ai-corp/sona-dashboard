@@ -1857,10 +1857,32 @@ async function pollReplicate(predictionId, token, maxWaitMs = 120000) {
 function resolveImageProvider(model) {
   if (model.startsWith("together:")) return "together";
   if (model.startsWith("fal:")) return "fal";
+  if (model.startsWith("pollinations-")) return "pollinations";
   if (MODEL_IDS[model]) return "replicate";
   // OpenRouter models contain a "/" (e.g. "openai/dall-e-3", "stability-ai/sd3")
   if (model.includes("/")) return "openrouter";
   return "replicate";
+}
+
+// Map frontend model IDs to Pollinations model names
+const POLLINATIONS_MODEL_MAP = {
+  "pollinations-flux":           "flux",
+  "pollinations-turbo":          "turbo",
+  "pollinations-flux-realism":   "flux-realism",
+  "pollinations-flux-anime":     "flux-anime",
+  "pollinations-flux-3d":        "flux-3d",
+};
+
+async function generateWithPollinations(prompt, model, size) {
+  const pollinationsModel = POLLINATIONS_MODEL_MAP[model] || "flux";
+  const encodedPrompt = encodeURIComponent(prompt);
+  // Pollinations returns the image directly — we use a redirect-safe URL
+  const url = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${size.width}&height=${size.height}&model=${pollinationsModel}&nologo=true&seed=${Math.floor(Math.random() * 1e9)}`;
+
+  // HEAD request to verify the URL resolves before returning it
+  const check = await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(30000) });
+  if (!check.ok) throw new Error(`Pollinations: HTTP ${check.status}`);
+  return { imageUrl: url };
 }
 
 async function generateWithTogether(prompt, model, size, apiKey) {
@@ -2048,6 +2070,17 @@ app.post("/api/generate/image", async (req, res) => {
       return res.json({ ok: true, ...result, model, ratio, prompt, provider: "fal" });
     } catch (err) {
       console.error("[generate/image] Fal.ai error:", err.message);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+
+  // Pollinations path — free, no API key required
+  if (detectedProvider === "pollinations") {
+    try {
+      const result = await generateWithPollinations(prompt.trim(), model, size);
+      return res.json({ ok: true, ...result, model, ratio, prompt, provider: "pollinations" });
+    } catch (err) {
+      console.error("[generate/image] Pollinations error:", err.message);
       return res.status(500).json({ ok: false, error: err.message });
     }
   }

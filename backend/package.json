@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --test src/scheduler.test.js src/provider-settings.test.js src/video-generation.test.js src/backlog-db.test.js"
+    "test": "node --test src/scheduler.test.js src/provider-settings.test.js src/video-generation.test.js src/backlog-db.test.js src/together-fal-generation.test.js src/image-generation.test.js"
   },
   "dependencies": {
     "express": "^4.18.2",
