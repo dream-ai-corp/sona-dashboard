@@ -18,6 +18,12 @@ import {
   CheckCircle,
   XCircle,
   Loader,
+  Image,
+  Video,
+  Music,
+  ArrowRight,
+  Info,
+  KeyRound,
 } from 'lucide-react';
 
 const SONA_API = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
@@ -1190,7 +1196,45 @@ function ConnectionsTab() {
       </div>
 
       {/* Provider API Keys */}
-      <ProviderApiKeysSection />
+      <div className="glass" style={{ borderRadius: '16px', padding: '20px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px' }}>
+          <KeyRound size={15} color="#f59e0b" />
+          <h2 style={{ fontSize: '14px', fontWeight: 600, color: '#e2e8f0', margin: 0 }}>Provider API Keys</h2>
+        </div>
+        {(['openrouter', 'replicate', 'openai', 'huggingface', 'together', 'fal'] as const).map((provider) => (
+          <div key={provider} style={{ marginBottom: '12px', padding: '12px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+              <label style={{ fontSize: '12px', fontWeight: 600, color: '#94a3b8', textTransform: 'capitalize', minWidth: '100px' }}>{provider}</label>
+              <input
+                type="password"
+                placeholder={provider === 'openrouter' ? 'sk-or-v1-...' : provider === 'replicate' ? 'r8_...' : provider === 'openai' ? 'sk-...' : provider === 'together' ? 'together-...' : provider === 'fal' ? 'fal-...' : 'hf_...'}
+                style={{ flex: 1, padding: '8px 12px', borderRadius: '8px', background: 'rgba(15,15,26,0.8)', border: '1px solid rgba(255,255,255,0.08)', color: '#e2e8f0', fontFamily: 'monospace', fontSize: '12px', outline: 'none' }}
+                onBlur={async (e) => {
+                  const val = e.target.value.trim();
+                  if (!val) return;
+                  try {
+                    await fetch('/api/settings/providers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, api_key: val }) });
+                  } catch {}
+                }}
+              />
+              <button
+                onClick={async (e) => {
+                  const btn = e.currentTarget;
+                  btn.textContent = 'Testing...';
+                  try {
+                    const res = await fetch(`/api/settings/providers/${provider}/test`, { method: 'POST' });
+                    const data = await res.json();
+                    btn.textContent = data.ok ? '✓ OK' : '✗ Failed';
+                    btn.style.color = data.ok ? '#4ade80' : '#f87171';
+                  } catch { btn.textContent = '✗ Error'; btn.style.color = '#f87171'; }
+                  setTimeout(() => { btn.textContent = 'Test'; btn.style.color = '#64748b'; }, 3000);
+                }}
+                style={{ padding: '6px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.04)', color: '#64748b', fontSize: '11px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}
+              >Test</button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

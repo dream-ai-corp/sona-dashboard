@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from 'next/navigation';
 import PageShell from '@/components/PageShell';
 import ImageGenModal from '@/components/ImageGenModal';
 import VideoGenModal from '@/components/VideoGenModal';
+import AudioGenModal from '@/components/AudioGenModal';
 import { ImageIcon, Video, Music, Layers } from 'lucide-react';
 
 type Tab = 'image' | 'video' | 'audio';
@@ -170,7 +171,7 @@ function MediaContent() {
         {/* Panel */}
         {activeTab === 'image' && <ImageGenModal />}
         {activeTab === 'video' && <VideoGenModal />}
-        {activeTab === 'audio' && <ComingSoon label="Génération audio" color="#4ade80" />}
+        {activeTab === 'audio' && <AudioGenModal />}
       </div>
     </div>
   );
