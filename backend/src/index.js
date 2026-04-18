@@ -163,7 +163,7 @@ function sseWrite(res, data) {
 function broadcastJobs() {
   if (jobSseClients.size === 0) return;
   const rows = db.prepare(
-    "SELECT * FROM jobs ORDER BY COALESCE(mtime, created_at) DESC LIMIT 100"
+    "SELECT id, project, goal, status, pid, job_dir, backlog_task, started_at, finished_at, error FROM daemon_jobs ORDER BY started_at DESC LIMIT 100"
   ).all();
   for (const res of jobSseClients) sseWrite(res, rows);
 }
@@ -349,22 +349,22 @@ app.get("/health", (_req, res) => res.json({ ok: true, db: DB_PATH }));
 // ── Jobs ──────────────────────────────────────────────────────────────────────
 app.get("/api/jobs", (_req, res) => {
   const rows = db.prepare(
-    "SELECT * FROM jobs ORDER BY COALESCE(mtime, created_at) DESC LIMIT 100"
+    "SELECT id, project, goal, status, pid, job_dir, backlog_task, started_at, finished_at, error FROM daemon_jobs ORDER BY started_at DESC LIMIT 100"
   ).all();
   res.json(rows);
 });
 
 app.get("/api/jobs/running", (_req, res) => {
-  const rows = db.prepare("SELECT * FROM jobs WHERE status = 'running' ORDER BY COALESCE(mtime, created_at) DESC").all();
+  const rows = db.prepare("SELECT id, project, goal, status, pid, job_dir, backlog_task, started_at, finished_at, error FROM daemon_jobs WHERE status = 'running' ORDER BY started_at DESC").all();
   res.json(rows);
 });
 
 // SSE stream — event-driven via broadcastJobs(), must come before /:id
 app.get("/api/jobs/stream", (req, res) => {
   sseHeaders(res);
-  // Send initial snapshot immediately
+  // Send initial snapshot immediately (SSOT: daemon_jobs)
   const rows = db.prepare(
-    "SELECT * FROM jobs ORDER BY COALESCE(mtime, created_at) DESC LIMIT 100"
+    "SELECT id, project, goal, status, pid, job_dir, backlog_task, started_at, finished_at, error FROM daemon_jobs ORDER BY started_at DESC LIMIT 100"
   ).all();
   sseWrite(res, rows);
   addSseClient(jobSseClients, res, req);
@@ -381,7 +381,7 @@ app.post("/api/jobs/sync", (_req, res) => {
 });
 
 app.get("/api/jobs/:id", (req, res) => {
-  const row = db.prepare("SELECT * FROM jobs WHERE id = ?").get(req.params.id);
+  const row = db.prepare("SELECT * FROM daemon_jobs WHERE id = ?").get(req.params.id);
   if (!row) return res.status(404).json({ error: "not found" });
   res.json(row);
 });
@@ -420,10 +420,10 @@ app.get("/api/jobs/:id/log", (req, res) => {
 app.post("/api/jobs", (req, res) => {
   const { id, goal, status, project, started_at } = req.body;
   if (!id) return res.status(400).json({ error: "id required" });
-  db.prepare(`INSERT OR REPLACE INTO jobs (id, goal, status, project, started_at, mtime, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(id, goal || null, status || "running", project || "independent",
-         started_at || Date.now(), Date.now(), Date.now());
+  db.prepare(`INSERT OR IGNORE INTO daemon_jobs (id, goal, status, project, started_at)
+    VALUES (?, ?, ?, ?, ?)`)
+    .run(id, (goal || "").slice(0, 500), status || "running", project || "independent",
+         started_at ? new Date(started_at).toISOString() : new Date().toISOString());
   broadcastJobs();
   res.json({ ok: true });
 });
@@ -432,9 +432,9 @@ app.post("/api/jobs", (req, res) => {
 app.patch("/api/jobs/:id", (req, res) => {
   const { status, completed_at, result } = req.body;
   if (!status) return res.status(400).json({ error: "status required" });
-  db.prepare(`UPDATE jobs SET status=?, completed_at=?, result=?, mtime=? WHERE id=?`)
-    .run(status, completed_at || Date.now(), result ? JSON.stringify(result) : null,
-         Date.now(), req.params.id);
+  db.prepare(`UPDATE daemon_jobs SET status=?, finished_at=?, error=? WHERE id=?`)
+    .run(status, completed_at ? new Date(completed_at).toISOString() : new Date().toISOString(),
+         result ? JSON.stringify(result) : null, req.params.id);
 
   // Propagate completion back to the recurring job that spawned this one
   if (status !== "running") {
@@ -462,11 +462,11 @@ app.delete("/api/jobs/:id", async (req, res) => {
       signal: AbortSignal.timeout(5000),
     });
     const data = await upstream.json().catch(() => ({}));
-    db.prepare("UPDATE jobs SET status = 'killed' WHERE id = ?").run(id);
+    db.prepare("UPDATE daemon_jobs SET status = 'killed', finished_at = datetime('now') WHERE id = ?").run(id);
     broadcastJobs();
     res.status(upstream.status).json(data);
   } catch (err) {
-    db.prepare("UPDATE jobs SET status = 'killed' WHERE id = ?").run(id);
+    db.prepare("UPDATE daemon_jobs SET status = 'killed', finished_at = datetime('now') WHERE id = ?").run(id);
     broadcastJobs();
     res.status(503).json({ error: err.message });
   }
@@ -475,12 +475,11 @@ app.delete("/api/jobs/:id", async (req, res) => {
 // ── Agents ────────────────────────────────────────────────────────────────────
 app.get("/api/agents", (_req, res) => {
   const rows = db.prepare(`
-    SELECT * FROM jobs
+    SELECT id, project, goal, status, pid, job_dir, backlog_task, started_at, finished_at, error
+    FROM daemon_jobs
     ORDER BY
-      CASE WHEN status = 'running' THEN 0
-           WHEN status = 'in_progress' THEN 0
-           ELSE 1 END ASC,
-      COALESCE(mtime, created_at) DESC
+      CASE WHEN status = 'running' THEN 0 ELSE 1 END ASC,
+      started_at DESC
     LIMIT 200
   `).all();
   res.json(rows);
@@ -998,19 +997,10 @@ app.post("/api/projects/:name/brainstorm/promote", (req, res) => {
 app.get("/api/projects/:name/jobs", (req, res) => {
   const name = decodeURIComponent(req.params.name);
   if (!name || name.includes("..")) return res.status(400).json({ error: "invalid name" });
-  const jobsDir = path.join(PROJECTS_DIR, name, "jobs");
-  if (!fs.existsSync(jobsDir)) return res.json({ jobs: [] });
-  try {
-    const entries = fs.readdirSync(jobsDir);
-    const jobs = entries
-      .filter((e) => fs.statSync(path.join(jobsDir, e)).isDirectory())
-      .map((e) => parseJobDir(e, path.join(jobsDir, e), name))
-      .filter(Boolean)
-      .sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
-    res.json({ jobs });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  const rows = db.prepare(
+    "SELECT id, project, goal, status, pid, job_dir, backlog_task, started_at, finished_at, error FROM daemon_jobs WHERE project = ? ORDER BY started_at DESC LIMIT 50"
+  ).all(name);
+  res.json({ jobs: rows });
 });
 
 // ── Project sprints ───────────────────────────────────────────────────────────
@@ -1831,6 +1821,7 @@ function getProviderKey(provider) {
   if (provider === "fal") return process.env.FAL_API_KEY || "";
   if (provider === "kling") return process.env.KLING_API_KEY || "";
   if (provider === "veo") return process.env.VEO_API_KEY || "";
+  if (provider === "elevenlabs") return process.env.ELEVENLABS_API_KEY || "";
   return "";
 }
 
@@ -2362,20 +2353,250 @@ app.get("/api/generate/video/:jobId/progress", (req, res) => {
   });
 });
 
+// ── Audio Generation ──────────────────────────────────────────────────────────
+// POST /api/generate/audio          → { ok: true, jobId }
+// GET  /api/generate/audio/:jobId   → { ok, status, progress, message, url?, error? }
+// GET  /api/generate/audio/:jobId/progress → SSE stream of job state until done
+// GET  /api/models/audio            → { ok: true, models: [...] }
+
+const REPLICATE_AUDIO_MODELS = {
+  "musicgen-small": "meta/musicgen:671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb",
+  "musicgen-large": "meta/musicgen:b05b1dff1d8c6dc63d14b0cdb42135378dcb87f6373b0d3d341ebb84d27d063c",
+  "audiogen":       "meta/audiogen:b05b1dff1d8c6dc63d14b0cdb42135378dcb87f6373b0d3d341ebb84d27d063c",
+  "bark":           "suno-ai/bark:b76242b40d67c76ab6742e987628a2a9ac019e11d56ab96c4e91ce03b79b2787",
+};
+
+// In-memory job store — completed jobs are pruned after 10 min
+const audioJobs = new Map();
+
+function createAudioJob() {
+  const jobId = randomUUID();
+  audioJobs.set(jobId, {
+    status: "pending",
+    progress: 0,
+    message: "Initialisation...",
+    url: null,
+    error: null,
+    createdAt: Date.now(),
+  });
+  return jobId;
+}
+
+function updateAudioJob(jobId, updates) {
+  const job = audioJobs.get(jobId);
+  if (job) audioJobs.set(jobId, { ...job, ...updates });
+}
+
+// Prune jobs older than 10 min that are no longer running
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [id, job] of audioJobs) {
+    if (job.status !== "running" && job.status !== "pending" && job.createdAt < cutoff) {
+      audioJobs.delete(id);
+    }
+  }
+}, 60_000);
+
+async function pollReplicateAudio(predictionId, apiKey, jobId, maxWaitMs = 180_000) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const r = await fetch(`https://api.replicate.com/v1/predictions/${predictionId}`, {
+      headers: { Authorization: `Token ${apiKey}` },
+    });
+    if (!r.ok) throw new Error(`Replicate poll HTTP ${r.status}`);
+    const data = await r.json();
+    if (data.status === "succeeded") {
+      // output is an array of URLs or a single URL
+      const outputUrl = Array.isArray(data.output) ? data.output[0] : data.output;
+      updateAudioJob(jobId, { status: "succeeded", progress: 100, message: "Terminé", url: outputUrl });
+      return outputUrl;
+    }
+    if (data.status === "failed" || data.status === "canceled") {
+      throw new Error(data.error || `Replicate: status ${data.status}`);
+    }
+    const elapsed = Date.now() - start;
+    const estimatedProgress = Math.min(95, 15 + Math.round((elapsed / maxWaitMs) * 80));
+    updateAudioJob(jobId, { progress: estimatedProgress, message: `Génération Replicate… (${data.status})` });
+  }
+  throw new Error("Replicate: timeout — audio generation took too long");
+}
+
+async function runAudioGeneration(jobId, prompt, model, type, duration) {
+  updateAudioJob(jobId, { status: "running", progress: 5, message: "Connexion au provider…" });
+  try {
+    const replicateKey = getProviderKey("replicate");
+    if (!replicateKey) throw new Error("Clé Replicate non configurée");
+
+    const replicateModel = REPLICATE_AUDIO_MODELS[model];
+    if (!replicateModel) throw new Error(`Modèle inconnu: ${model}`);
+
+    updateAudioJob(jobId, { progress: 10, message: "Soumission à Replicate…" });
+
+    // Build input based on model
+    let input;
+    if (model === "bark") {
+      input = { prompt, text_prompt: prompt };
+    } else if (model === "audiogen") {
+      input = { model_version: "stereo-large", prompt, duration };
+    } else {
+      // musicgen-small / musicgen-large
+      input = {
+        model_version: model === "musicgen-large" ? "stereo-large" : "stereo-melody-large",
+        prompt,
+        duration,
+        output_format: "mp3",
+      };
+    }
+
+    const submitRes = await fetch("https://api.replicate.com/v1/predictions", {
+      method: "POST",
+      headers: {
+        Authorization: `Token ${replicateKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ version: replicateModel, input }),
+    });
+    if (!submitRes.ok) {
+      const errBody = await submitRes.json().catch(() => ({}));
+      throw new Error(`Replicate submit HTTP ${submitRes.status}: ${errBody.detail || submitRes.statusText}`);
+    }
+    const prediction = await submitRes.json();
+    if (!prediction.id) throw new Error("Replicate: pas d'ID de prédiction");
+
+    updateAudioJob(jobId, { progress: 15, message: "Génération en cours…" });
+    await pollReplicateAudio(prediction.id, replicateKey, jobId);
+  } catch (err) {
+    updateAudioJob(jobId, { status: "failed", error: err.message, message: err.message, progress: 0 });
+  }
+}
+
+app.get("/api/models/audio", (req, res) => {
+  const models = [];
+
+  const replicateKey = getProviderKey("replicate");
+  if (replicateKey) {
+    models.push(
+      { id: "musicgen-small", label: "MusicGen Small (3.3s/s)",       provider: "replicate", tier: "free", types: ["music"] },
+      { id: "musicgen-large", label: "MusicGen Large (haute qualité)", provider: "replicate", tier: "free", types: ["music"] },
+      { id: "audiogen",       label: "AudioGen (effets sonores)",      provider: "replicate", tier: "free", types: ["sound_effect"] },
+      { id: "bark",           label: "Bark (voix/effets)",             provider: "replicate", tier: "free", types: ["voice", "sound_effect"] },
+    );
+  }
+
+  const elevenlabsKey = getProviderKey("elevenlabs");
+  if (elevenlabsKey) {
+    models.push(
+      { id: "eleven-multilingual", label: "ElevenLabs Multilingual",    provider: "elevenlabs", tier: "free", note: "10k chars/mois", types: ["voice"] },
+      { id: "eleven-turbo-v2",     label: "ElevenLabs Turbo v2 (fast)", provider: "elevenlabs", tier: "free", types: ["voice"] },
+    );
+  }
+
+  if (models.length === 0) {
+    // Return fallback list even without keys so UI shows something
+    models.push(
+      { id: "musicgen-small", label: "MusicGen Small (3.3s/s)",       provider: "replicate", tier: "free", types: ["music"] },
+      { id: "musicgen-large", label: "MusicGen Large (haute qualité)", provider: "replicate", tier: "free", types: ["music"] },
+      { id: "audiogen",       label: "AudioGen (effets sonores)",      provider: "replicate", tier: "free", types: ["sound_effect"] },
+      { id: "bark",           label: "Bark (voix/effets)",             provider: "replicate", tier: "free", types: ["voice", "sound_effect"] },
+    );
+  }
+
+  res.json({ ok: true, models });
+});
+
+app.post("/api/generate/audio", (req, res) => {
+  const { prompt, model = "musicgen-small", type = "music", duration = 10 } = req.body || {};
+  if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
+    return res.status(400).json({ ok: false, error: "prompt is required" });
+  }
+  if (typeof model !== "string") {
+    return res.status(400).json({ ok: false, error: "model must be a string" });
+  }
+  if (!["music", "sound_effect", "voice"].includes(type)) {
+    return res.status(400).json({ ok: false, error: "type must be music, sound_effect, or voice" });
+  }
+  if (![5, 10, 15, 30].includes(duration)) {
+    return res.status(400).json({ ok: false, error: "duration must be 5, 10, 15, or 30" });
+  }
+  const jobId = createAudioJob();
+  runAudioGeneration(jobId, prompt.trim(), model, type, duration).catch((err) => {
+    console.error("[generate/audio] unhandled:", err.message);
+    updateAudioJob(jobId, { status: "failed", error: err.message, message: err.message });
+  });
+  res.json({ ok: true, jobId });
+});
+
+app.get("/api/generate/audio/:jobId", (req, res) => {
+  const job = audioJobs.get(req.params.jobId);
+  if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+  res.json({ ok: true, ...job });
+});
+
+app.get("/api/generate/audio/:jobId/progress", (req, res) => {
+  const { jobId } = req.params;
+  const job = audioJobs.get(jobId);
+  if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  // Send current state immediately
+  res.write(`data: ${JSON.stringify({ ...audioJobs.get(jobId) })}\n\n`);
+
+  // If already terminal, close right away
+  const initial = audioJobs.get(jobId);
+  if (initial && (initial.status === "succeeded" || initial.status === "failed")) {
+    res.end();
+    return;
+  }
+
+  let lastSent = JSON.stringify(initial);
+
+  const pollInterval = setInterval(() => {
+    const j = audioJobs.get(jobId);
+    if (!j) { clearInterval(pollInterval); if (!res.writableEnded) res.end(); return; }
+    const serialized = JSON.stringify(j);
+    if (serialized !== lastSent && !res.writableEnded) {
+      res.write(`data: ${serialized}\n\n`);
+      lastSent = serialized;
+    }
+    if (j.status === "succeeded" || j.status === "failed") {
+      clearInterval(pollInterval);
+      clearInterval(heartbeat);
+      if (!res.writableEnded) res.end();
+    }
+  }, 1000);
+
+  const heartbeat = setInterval(() => {
+    if (res.writableEnded) { clearInterval(heartbeat); return; }
+    res.write(": heartbeat\n\n");
+  }, 20_000);
+
+  req.on("close", () => {
+    clearInterval(pollInterval);
+    clearInterval(heartbeat);
+  });
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
-syncFromFilesystem();
+// SSOT: daemon_jobs is the single source of truth — no filesystem sync needed
+// syncFromFilesystem(); // DISABLED: was causing ghost status changes
 
 // Periodic filesystem sync every 30 seconds — also broadcasts to job SSE clients.
 // Also cleans up any stale current_job_id entries for completed jobs and queue items.
 cron.schedule("*/30 * * * * *", () => {
   try {
-    syncFromFilesystem();
+    // SSOT: daemon_jobs is the source of truth, no filesystem sync needed
+    broadcastJobs();
     // Resolve recurring jobs whose tracked sub-job has now finished
     const tracked = db
       .prepare("SELECT id, current_job_id FROM recurring_jobs WHERE current_job_id IS NOT NULL")
       .all();
     for (const rj of tracked) {
-      const job = db.prepare("SELECT status FROM jobs WHERE id = ?").get(rj.current_job_id);
+      const job = db.prepare("SELECT status FROM daemon_jobs WHERE id = ?").get(rj.current_job_id);
       if (job && job.status !== "running") {
         const finalStatus = job.status === "done" ? "done" : "error";
         db.prepare(
@@ -2388,7 +2609,7 @@ cron.schedule("*/30 * * * * *", () => {
       .prepare("SELECT id, agent_job_id FROM agent_queue WHERE status = 'running' AND agent_job_id IS NOT NULL")
       .all();
     for (const qi of runningQueue) {
-      const job = db.prepare("SELECT status FROM jobs WHERE id = ?").get(qi.agent_job_id);
+      const job = db.prepare("SELECT status FROM daemon_jobs WHERE id = ?").get(qi.agent_job_id);
       if (job && job.status !== "running") {
         const finalStatus = job.status === "done" ? "done" : "failed";
         db.prepare(
@@ -2402,7 +2623,7 @@ cron.schedule("*/30 * * * * *", () => {
 });
 
 // Minute-by-minute scheduler — fires recurring jobs and consumes the agent queue
-cron.schedule("* * * * *", async () => {
+cron.schedule("*/15 * * * * *", async () => {
   try {
     const results = await runDueJobs({
       db,
