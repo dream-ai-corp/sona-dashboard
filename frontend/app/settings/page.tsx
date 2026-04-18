@@ -18,6 +18,11 @@ import {
   CheckCircle,
   XCircle,
   Loader,
+  Image,
+  Video,
+  Music,
+  ArrowRight,
+  Info,
 } from 'lucide-react';
 
 const SONA_API = process.env.NEXT_PUBLIC_SONA_API_URL ?? '';
@@ -54,23 +59,6 @@ interface MediaSettings {
   images: boolean;
   video: boolean;
   audio: boolean;
-}
-
-const MEDIA_STORAGE_KEY = 'sona_media_settings';
-
-function loadMediaSettings(): MediaSettings {
-  if (typeof window === 'undefined') return { images: false, video: false, audio: false };
-  try {
-    const raw = localStorage.getItem(MEDIA_STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as MediaSettings;
-  } catch {}
-  return { images: false, video: false, audio: false };
-}
-
-function saveMediaSettings(s: MediaSettings) {
-  try {
-    localStorage.setItem(MEDIA_STORAGE_KEY, JSON.stringify(s));
-  } catch {}
 }
 
 function TabButton({
@@ -306,13 +294,20 @@ function MediaTab({ onGoToConnections }: { onGoToConnections: () => void }) {
   const [settings, setSettings] = useState<MediaSettings>({ images: false, video: false, audio: false });
 
   useEffect(() => {
-    setSettings(loadMediaSettings());
+    fetch('/api/settings/media')
+      .then((r) => r.json())
+      .then((data: MediaSettings) => setSettings(data))
+      .catch(() => {});
   }, []);
 
   const update = useCallback((key: keyof MediaSettings, value: boolean) => {
     setSettings((prev) => {
       const next = { ...prev, [key]: value };
-      saveMediaSettings(next);
+      fetch('/api/settings/media', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ [key]: value }),
+      }).catch(() => {});
       return next;
     });
   }, []);
