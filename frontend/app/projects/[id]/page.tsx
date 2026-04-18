@@ -25,8 +25,12 @@ import {
   Clock,
   AlertCircle,
   CheckCircle2,
+  CircleCheck,
   RotateCcw,
   Mic,
+  Play,
+  Pause,
+  Square,
 } from 'lucide-react';
 
 interface Service {
@@ -48,18 +52,44 @@ interface Project {
   priority?: 'high' | 'medium' | 'low';
 }
 
+interface AcceptanceCriterion {
+  id: string;
+  text: string;
+  status: 'pending' | 'pass' | 'fail';
+}
+
 interface BacklogItem {
+  id?: string;
   index: number;
   lineIndex: number;
   text: string;
   checked: boolean;
+  status?: 'todo' | 'in_progress' | 'blocked' | 'done';
   priority: 'P1' | 'P2' | 'P3' | null;
+  acceptanceCriteria?: AcceptanceCriterion[];
+  branch?: string | null;
+  external_id?: string | null;
+  sprint_id?: string;
+  assigned_job_id?: string | null;
 }
 
 interface BacklogSection {
   header: string | null;
   level: number;
   items: BacklogItem[];
+  sprint_id?: string;
+  sprint_status?: 'planning' | 'active' | 'paused' | 'done';
+  sprint_priority?: 'high' | 'medium' | 'low';
+}
+
+interface DbSprint {
+  id: string;
+  project_id: string;
+  name: string;
+  sort_order: number;
+  priority: 'high' | 'medium' | 'low';
+  status: 'planning' | 'active' | 'paused' | 'done';
+  created_at: number;
 }
 
 interface Sprint {
@@ -276,18 +306,41 @@ function AuditModal({
   );
 }
 
+function sprintPriorityBadge(priority?: 'high' | 'medium' | 'low') {
+  const colors: Record<string, { color: string; bg: string; border: string }> = {
+    high: { color: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.3)' },
+    medium: { color: '#fbbf24', bg: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.3)' },
+    low: { color: '#94a3b8', bg: 'rgba(148,163,184,0.1)', border: 'rgba(148,163,184,0.2)' },
+  };
+  return colors[priority ?? 'medium'] ?? colors.medium;
+}
+
 function BacklogHeader({
   header,
   level,
   auditStatus,
   onAuditClick,
+  sprintStatus,
+  sprintPriority,
+  onSprintAction,
+  onSprintPriorityCycle,
 }: {
   header: string;
   level: number;
   auditStatus: AuditStatus;
   onAuditClick: () => void;
+  sprintStatus?: 'planning' | 'active' | 'paused' | 'done';
+  sprintPriority?: 'high' | 'medium' | 'low';
+  onSprintAction?: (action: 'active' | 'paused' | 'planning') => void;
+  onSprintPriorityCycle?: () => void;
 }) {
   const chip = auditChipStyle(auditStatus);
+  const prioBadge = sprintPriorityBadge(sprintPriority);
+  const sprintControlBtnStyle: React.CSSProperties = {
+    background: 'none', border: '1px solid rgba(255,255,255,0.08)',
+    borderRadius: '6px', padding: '3px 6px', cursor: 'pointer',
+    display: 'inline-flex', alignItems: 'center', transition: 'all 150ms',
+  };
   return (
     <div
       data-testid="backlog-section-header"
@@ -316,6 +369,61 @@ function BacklogHeader({
       >
         {header}
       </span>
+      {sprintPriority && (
+        <button
+          onClick={onSprintPriorityCycle}
+          title="Click to cycle priority: high / medium / low"
+          data-testid="sprint-priority-badge"
+          style={{
+            fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '10px',
+            background: prioBadge.bg, color: prioBadge.color,
+            border: `1px solid ${prioBadge.border}`,
+            textTransform: 'uppercase', letterSpacing: '0.06em',
+            cursor: 'pointer', fontFamily: 'inherit', transition: 'all 150ms',
+          }}
+        >
+          {sprintPriority}
+        </button>
+      )}
+      {sprintStatus && (
+        <span style={{
+          fontSize: '9px', fontWeight: 700, padding: '2px 6px', borderRadius: '10px',
+          background: sprintStatus === 'active' ? 'rgba(34,197,94,0.1)' : sprintStatus === 'paused' ? 'rgba(251,191,36,0.1)' : 'rgba(100,116,139,0.1)',
+          color: sprintStatus === 'active' ? '#4ade80' : sprintStatus === 'paused' ? '#fbbf24' : '#94a3b8',
+          border: `1px solid ${sprintStatus === 'active' ? 'rgba(34,197,94,0.25)' : sprintStatus === 'paused' ? 'rgba(251,191,36,0.25)' : 'rgba(100,116,139,0.2)'}`,
+          textTransform: 'uppercase', letterSpacing: '0.06em',
+        }}>
+          {sprintStatus}
+        </span>
+      )}
+      {onSprintAction && (
+        <div style={{ display: 'flex', gap: '4px', marginLeft: '4px' }}>
+          <button
+            onClick={() => onSprintAction('active')}
+            title="Activer le sprint"
+            data-testid="sprint-play"
+            style={{ ...sprintControlBtnStyle, color: sprintStatus === 'active' ? '#4ade80' : '#475569' }}
+          >
+            <Play size={11} />
+          </button>
+          <button
+            onClick={() => onSprintAction('paused')}
+            title="Mettre en pause"
+            data-testid="sprint-pause"
+            style={{ ...sprintControlBtnStyle, color: sprintStatus === 'paused' ? '#fbbf24' : '#475569' }}
+          >
+            <Pause size={11} />
+          </button>
+          <button
+            onClick={() => onSprintAction('planning')}
+            title="Arrêter (planning)"
+            data-testid="sprint-stop"
+            style={{ ...sprintControlBtnStyle, color: sprintStatus === 'planning' ? '#94a3b8' : '#475569' }}
+          >
+            <Square size={11} />
+          </button>
+        </div>
+      )}
       <button
         onClick={onAuditClick}
         title={chip.label}
@@ -385,108 +493,138 @@ function BacklogItemRow({
     onPriorityChange(item, next);
   };
 
+  const hasAC = (item.acceptanceCriteria?.length ?? 0) > 0;
+  const hasBranch = !!item.branch;
+
   return (
     <div
       style={{
-        display: 'flex', alignItems: 'center', gap: '10px',
         padding: '10px 12px', borderRadius: '10px',
-        background: item.checked ? 'rgba(255,255,255,0.01)' : 'rgba(255,255,255,0.025)',
-        border: `1px solid ${item.checked ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.07)'}`,
+        background: item.status === 'in_progress' ? 'rgba(6,182,212,0.04)' : item.status === 'blocked' ? 'rgba(239,68,68,0.04)' : item.checked ? 'rgba(255,255,255,0.01)' : 'rgba(255,255,255,0.025)',
+        border: `1px solid ${item.status === 'in_progress' ? 'rgba(6,182,212,0.2)' : item.status === 'blocked' ? 'rgba(239,68,68,0.2)' : item.checked ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.07)'}`,
         marginBottom: '6px', transition: 'all 150ms ease',
       }}
     >
-      <button
-        onClick={() => onToggle(item)}
-        disabled={saving}
-        style={{
-          width: '18px', height: '18px', borderRadius: '5px', flexShrink: 0,
-          border: `2px solid ${item.checked ? '#4ade80' : 'rgba(255,255,255,0.2)'}`,
-          background: item.checked ? 'rgba(34,197,94,0.2)' : 'transparent',
-          cursor: saving ? 'not-allowed' : 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          transition: 'all 150ms ease', padding: 0,
-        }}
-      >
-        {item.checked && <Check size={10} color="#4ade80" strokeWidth={3} />}
-      </button>
+      {/* Main item row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <button
+          onClick={() => onToggle(item)}
+          disabled={saving}
+          style={{
+            width: '18px', height: '18px', borderRadius: '5px', flexShrink: 0,
+            border: `2px solid ${item.checked ? '#4ade80' : 'rgba(255,255,255,0.2)'}`,
+            background: item.checked ? 'rgba(34,197,94,0.2)' : 'transparent',
+            cursor: saving ? 'not-allowed' : 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 150ms ease', padding: 0,
+          }}
+        >
+          {item.checked && <Check size={10} color="#4ade80" strokeWidth={3} />}
+        </button>
 
-      {/* Priority badge — click to cycle P1→P2→P3→none */}
-      <button
-        onClick={cyclePriority}
-        disabled={saving}
-        title="Click to change priority"
-        style={{
-          flexShrink: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '0.06em',
-          padding: '2px 6px', borderRadius: '5px', cursor: saving ? 'not-allowed' : 'pointer',
-          color: item.checked ? '#334155' : pc.color,
-          background: item.checked ? 'rgba(255,255,255,0.03)' : pc.bg,
-          border: `1px solid ${item.checked ? 'rgba(255,255,255,0.06)' : pc.border}`,
-          transition: 'all 150ms ease', minWidth: '30px', textAlign: 'center',
-        }}
-      >
-        {item.priority ?? '—'}
-      </button>
+        {/* Priority badge — click to cycle P1→P2→P3→none */}
+        <button
+          onClick={cyclePriority}
+          disabled={saving}
+          title="Click to change priority"
+          style={{
+            flexShrink: 0, fontSize: '10px', fontWeight: 700, letterSpacing: '0.06em',
+            padding: '2px 6px', borderRadius: '5px', cursor: saving ? 'not-allowed' : 'pointer',
+            color: item.checked ? '#334155' : pc.color,
+            background: item.checked ? 'rgba(255,255,255,0.03)' : pc.bg,
+            border: `1px solid ${item.checked ? 'rgba(255,255,255,0.06)' : pc.border}`,
+            transition: 'all 150ms ease', minWidth: '30px', textAlign: 'center',
+          }}
+        >
+          {item.priority ?? '—'}
+        </button>
 
-      {/* Audit status icon */}
-      {auditStatus && (() => {
-        const icon = auditItemIconStyle(auditStatus);
-        return (
-          <span title={icon.title} style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
-            {auditStatus === 'pass'    && <CheckCircle2 size={13} color={icon.color} />}
-            {auditStatus === 'partial' && <AlertCircle  size={13} color={icon.color} />}
-            {auditStatus === 'fail'    && <X            size={13} color={icon.color} />}
-          </span>
-        );
-      })()}
+        {editing ? (
+          <div style={{ flex: 1, display: 'flex', gap: '6px', alignItems: 'center' }}>
+            <input
+              ref={inputRef}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitEdit();
+                if (e.key === 'Escape') cancelEdit();
+              }}
+              style={{
+                flex: 1, fontSize: '13px', padding: '3px 8px',
+                background: 'rgba(255,255,255,0.06)',
+                border: '1px solid rgba(124,58,237,0.4)',
+                borderRadius: '6px', color: '#e2e8f0',
+                outline: 'none', fontFamily: 'inherit',
+              }}
+            />
+            <button onClick={commitEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4ade80', padding: '2px' }}>
+              <Check size={14} />
+            </button>
+            <button onClick={cancelEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f87171', padding: '2px' }}>
+              <X size={14} />
+            </button>
+          </div>
+        ) : (
+          <>
+            <span
+              style={{
+                flex: 1, fontSize: '13px', lineHeight: 1.5,
+                color: item.checked ? '#475569' : '#cbd5e1',
+                textDecoration: item.checked ? 'line-through' : 'none',
+              }}
+            >
+              {item.text}
+            </span>
+            <button
+              onClick={() => { setDraft(item.text); setEditing(true); }}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: '#334155', padding: '2px', opacity: 0,
+                transition: 'opacity 150ms',
+              }}
+              className="edit-btn"
+            >
+              <Pencil size={12} />
+            </button>
+          </>
+        )}
+      </div>
 
-      {editing ? (
-        <div style={{ flex: 1, display: 'flex', gap: '6px', alignItems: 'center' }}>
-          <input
-            ref={inputRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') commitEdit();
-              if (e.key === 'Escape') cancelEdit();
-            }}
-            style={{
-              flex: 1, fontSize: '13px', padding: '3px 8px',
-              background: 'rgba(255,255,255,0.06)',
-              border: '1px solid rgba(124,58,237,0.4)',
-              borderRadius: '6px', color: '#e2e8f0',
-              outline: 'none', fontFamily: 'inherit',
-            }}
-          />
-          <button onClick={commitEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4ade80', padding: '2px' }}>
-            <Check size={14} />
-          </button>
-          <button onClick={cancelEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f87171', padding: '2px' }}>
-            <X size={14} />
-          </button>
+      {/* Acceptance Criteria & Branch (shown only when not editing) */}
+      {!editing && (hasAC || hasBranch) && (
+        <div style={{ paddingLeft: '16px', marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+          {item.acceptanceCriteria?.map((ac, i) => {
+            const acText = typeof ac === 'string' ? ac : ac.text;
+            const acStatus = typeof ac === 'string' ? 'pending' : ac.status;
+            const acColor = acStatus === 'pass' ? '#4ade80' : acStatus === 'fail' ? '#f87171' : '#64748b';
+            return (
+              <div
+                key={typeof ac === 'string' ? i : ac.id}
+                data-testid="ac-item"
+                style={{ display: 'flex', alignItems: 'flex-start', gap: '5px' }}
+              >
+                <CircleCheck size={11} color={acColor} style={{ flexShrink: 0, marginTop: '2px' }} />
+                <span style={{ fontSize: '11px', color: '#64748b', lineHeight: 1.5 }}>{acText}</span>
+              </div>
+            );
+          })}
+          {item.branch && (
+            <div style={{ marginTop: hasBranch && hasAC ? '2px' : 0 }}>
+              <code
+                data-testid="branch-chip"
+                style={{
+                  fontSize: '10px', color: '#475569',
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: '4px', padding: '1px 6px',
+                  fontFamily: 'monospace',
+                }}
+              >
+                {item.branch}
+              </code>
+            </div>
+          )}
         </div>
-      ) : (
-        <>
-          <span
-            style={{
-              flex: 1, fontSize: '13px', lineHeight: 1.5,
-              color: item.checked ? '#475569' : '#cbd5e1',
-              textDecoration: item.checked ? 'line-through' : 'none',
-            }}
-          >
-            {item.text}
-          </span>
-          <button
-            onClick={() => { setDraft(item.text); setEditing(true); }}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: '#334155', padding: '2px', opacity: 0,
-              transition: 'opacity 150ms',
-            }}
-            className="edit-btn"
-          >
-            <Pencil size={12} />
-          </button>
-        </>
       )}
     </div>
   );
@@ -496,14 +634,17 @@ function SprintRow({
   sprint,
   onUpdate,
   onDelete,
+  projectId,
 }: {
   sprint: Sprint;
   onUpdate: (id: string, patch: Partial<Sprint>) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  projectId: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Sprint>({ ...sprint });
   const [saving, setSaving] = useState(false);
+  const [queueStatus, setQueueStatus] = useState<'idle' | 'launched' | 'paused' | 'loading'>('idle');
 
   const ss = sprintStatusStyle(sprint.status);
 
@@ -517,6 +658,31 @@ function SprintRow({
   const cancelEdit = () => {
     setDraft({ ...sprint });
     setEditing(false);
+  };
+
+  const handleLaunchSprint = async () => {
+    setQueueStatus('loading');
+    try {
+      const res = await fetch(`/api/queue/sprint/${sprint.id}/launch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId }),
+      });
+      if (res.ok) setQueueStatus('launched');
+      else setQueueStatus('idle');
+    } catch {
+      setQueueStatus('idle');
+    }
+  };
+
+  const handlePauseSprint = async () => {
+    setQueueStatus('loading');
+    try {
+      await fetch(`/api/queue/sprint/${sprint.id}/pause`, { method: 'POST' });
+      setQueueStatus('paused');
+    } catch {
+      setQueueStatus('idle');
+    }
   };
 
   if (editing) {
@@ -609,7 +775,47 @@ function SprintRow({
           </div>
         )}
       </div>
-      <div style={{ display: 'flex', gap: '4px', flexShrink: 0 }}>
+      <div style={{ display: 'flex', gap: '4px', flexShrink: 0, alignItems: 'center' }}>
+        {/* Queue controls */}
+        {queueStatus === 'loading' ? (
+          <Loader2 size={13} color="#a78bfa" className="animate-spin" style={{ marginRight: '4px' }} />
+        ) : (
+          <>
+            <button
+              data-testid="sprint-launch-btn"
+              onClick={handleLaunchSprint}
+              title="Launch sprint items to queue"
+              style={{
+                background: queueStatus === 'launched' ? 'rgba(34,197,94,0.15)' : 'none',
+                border: queueStatus === 'launched' ? '1px solid rgba(34,197,94,0.3)' : 'none',
+                cursor: 'pointer',
+                color: queueStatus === 'launched' ? '#4ade80' : '#334155',
+                padding: '4px', borderRadius: '6px', transition: 'all 150ms',
+              }}
+              onMouseEnter={(e) => { if (queueStatus !== 'launched') e.currentTarget.style.color = '#4ade80'; }}
+              onMouseLeave={(e) => { if (queueStatus !== 'launched') e.currentTarget.style.color = '#334155'; }}
+            >
+              <Play size={13} />
+            </button>
+            <button
+              data-testid="sprint-pause-btn"
+              onClick={handlePauseSprint}
+              title="Remove queued items from this sprint"
+              style={{
+                background: queueStatus === 'paused' ? 'rgba(251,191,36,0.15)' : 'none',
+                border: queueStatus === 'paused' ? '1px solid rgba(251,191,36,0.3)' : 'none',
+                cursor: 'pointer',
+                color: queueStatus === 'paused' ? '#fbbf24' : '#334155',
+                padding: '4px', borderRadius: '6px', transition: 'all 150ms',
+              }}
+              onMouseEnter={(e) => { if (queueStatus !== 'paused') e.currentTarget.style.color = '#fbbf24'; }}
+              onMouseLeave={(e) => { if (queueStatus !== 'paused') e.currentTarget.style.color = '#334155'; }}
+            >
+              <Pause size={13} />
+            </button>
+          </>
+        )}
+        <div style={{ width: '1px', height: '16px', background: 'rgba(255,255,255,0.06)', margin: '0 2px' }} />
         <button
           onClick={() => setEditing(true)}
           style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#334155', padding: '4px', borderRadius: '6px', transition: 'color 150ms' }}
@@ -722,16 +928,29 @@ export default function ProjectDetailPage() {
     }
   }, [id]);
 
+  const [dbSprints, setDbSprints] = useState<DbSprint[]>([]);
+
   const fetchBacklog = useCallback(async () => {
     setLoadingBacklog(true);
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/backlog`);
-      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; error?: string };
+      const res = await fetch(`/api/backlogs/${encodeURIComponent(id)}/full`);
+      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; sprints?: DbSprint[]; error?: string };
       if (data.error) throw new Error(data.error);
       setItems(data.items ?? []);
       setSections(data.sections ?? []);
+      setDbSprints(data.sprints ?? []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load backlog');
+      // Fallback to old markdown endpoint if DB endpoint fails
+      try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(id)}/backlog`);
+        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; error?: string };
+        if (!data.error) {
+          setItems(data.items ?? []);
+          setSections(data.sections ?? []);
+        }
+      } catch {
+        setError(e instanceof Error ? e.message : 'Failed to load backlog');
+      }
     } finally {
       setLoadingBacklog(false);
     }
@@ -791,9 +1010,9 @@ export default function ProjectDetailPage() {
     // Silent auto-refresh every 5s — backlog and jobs can change while a daemon job runs
     const silentRefreshBacklog = async () => {
       try {
-        const res = await fetch(`/api/projects/${encodeURIComponent(id)}/backlog`);
-        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; error?: string };
-        if (!data.error) { setItems(data.items ?? []); setSections(data.sections ?? []); }
+        const res = await fetch(`/api/backlogs/${encodeURIComponent(id)}/full`);
+        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[]; sprints?: DbSprint[]; error?: string };
+        if (!data.error) { setItems(data.items ?? []); setSections(data.sections ?? []); setDbSprints(data.sprints ?? []); }
       } catch {}
     };
     const silentRefreshJobs = async () => {
@@ -817,17 +1036,32 @@ export default function ProjectDetailPage() {
   const handleToggle = async (item: BacklogItem) => {
     setSaving(true);
     try {
-      const res = await fetch(
-        `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ checked: !item.checked }),
-        },
-      );
-      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
-      if (data.items) setItems(data.items);
-      if (data.sections) setSections(data.sections);
+      if (item.id) {
+        // DB-backed item
+        const newStatus = item.checked ? 'todo' : 'done';
+        await fetch(
+          `/api/backlogs/${encodeURIComponent(id)}/items/${item.id}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: newStatus }),
+          },
+        );
+        await fetchBacklog();
+      } else {
+        // Legacy markdown fallback
+        const res = await fetch(
+          `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ checked: !item.checked }),
+          },
+        );
+        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
+        if (data.items) setItems(data.items);
+        if (data.sections) setSections(data.sections);
+      }
     } finally {
       setSaving(false);
     }
@@ -836,17 +1070,29 @@ export default function ProjectDetailPage() {
   const handleEdit = async (item: BacklogItem, text: string) => {
     setSaving(true);
     try {
-      const res = await fetch(
-        `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text }),
-        },
-      );
-      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
-      if (data.items) setItems(data.items);
-      if (data.sections) setSections(data.sections);
+      if (item.id) {
+        await fetch(
+          `/api/backlogs/${encodeURIComponent(id)}/items/${item.id}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+          },
+        );
+        await fetchBacklog();
+      } else {
+        const res = await fetch(
+          `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text }),
+          },
+        );
+        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
+        if (data.items) setItems(data.items);
+        if (data.sections) setSections(data.sections);
+      }
     } finally {
       setSaving(false);
     }
@@ -855,17 +1101,65 @@ export default function ProjectDetailPage() {
   const handlePriorityChange = async (item: BacklogItem, priority: 'P1' | 'P2' | 'P3' | null) => {
     setSaving(true);
     try {
-      const res = await fetch(
-        `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
+      if (item.id) {
+        await fetch(
+          `/api/backlogs/${encodeURIComponent(id)}/items/${item.id}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ priority }),
+          },
+        );
+        await fetchBacklog();
+      } else {
+        const res = await fetch(
+          `/api/projects/${encodeURIComponent(id)}/backlog/${item.index}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ priority }),
+          },
+        );
+        const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
+        if (data.items) setItems(data.items);
+        if (data.sections) setSections(data.sections);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSprintPriorityCycle = async (sprintId: string, currentPriority: string) => {
+    const cycle: Record<string, string> = { high: 'medium', medium: 'low', low: 'high' };
+    const next = cycle[currentPriority] || 'medium';
+    setSaving(true);
+    try {
+      await fetch(
+        `/api/backlogs/${encodeURIComponent(id)}/sprints/${sprintId}`,
         {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ priority }),
+          body: JSON.stringify({ priority: next }),
         },
       );
-      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
-      if (data.items) setItems(data.items);
-      if (data.sections) setSections(data.sections);
+      await fetchBacklog();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSprintAction = async (sprintId: string, action: 'active' | 'paused' | 'planning') => {
+    setSaving(true);
+    try {
+      await fetch(
+        `/api/backlogs/${encodeURIComponent(id)}/sprints/${sprintId}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: action }),
+        },
+      );
+      await fetchBacklog();
     } finally {
       setSaving(false);
     }
@@ -876,14 +1170,30 @@ export default function ProjectDetailPage() {
     if (!text) return;
     setSaving(true);
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(id)}/backlog`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      const data = await res.json() as { items?: BacklogItem[]; sections?: BacklogSection[] };
-      if (data.items) setItems(data.items);
-      if (data.sections) setSections(data.sections);
+      if (dbSprints.length > 0) {
+        // Add to first active sprint, or first sprint if none active
+        const activeSprint = dbSprints.find(s => s.status === 'active') ?? dbSprints[0];
+        await fetch(`/api/backlogs/${encodeURIComponent(id)}/items`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sprint_id: activeSprint.id, text }),
+        });
+        await fetchBacklog();
+      } else {
+        // Fallback: create a default sprint first, then add item
+        const sprintRes = await fetch(`/api/backlogs/${encodeURIComponent(id)}/sprints`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Backlog', priority: 'medium' }),
+        });
+        const sprint = await sprintRes.json();
+        await fetch(`/api/backlogs/${encodeURIComponent(id)}/items`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sprint_id: sprint.id, text }),
+        });
+        await fetchBacklog();
+      }
       setNewItemText('');
     } finally {
       setSaving(false);
@@ -1524,6 +1834,7 @@ export default function ProjectDetailPage() {
                     sprint={sprint}
                     onUpdate={handleUpdateSprint}
                     onDelete={handleDeleteSprint}
+                    projectId={id}
                   />
                 ))}
               </div>
@@ -1573,6 +1884,10 @@ export default function ProjectDetailPage() {
                           level={section.level}
                           auditStatus={sprintAuditStatus}
                           onAuditClick={() => setAuditModal({ sprint: section.header!, reports: sprintAudits })}
+                          sprintStatus={section.sprint_status}
+                          sprintPriority={section.sprint_priority}
+                          onSprintAction={section.sprint_id ? (action) => handleSprintAction(section.sprint_id!, action) : undefined}
+                          onSprintPriorityCycle={section.sprint_id ? () => handleSprintPriorityCycle(section.sprint_id!, section.sprint_priority ?? 'medium') : undefined}
                         />
                       )}
                       {sOpen.length > 0 && (
