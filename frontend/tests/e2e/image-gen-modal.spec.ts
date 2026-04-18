@@ -35,8 +35,24 @@ test.describe('Media Page — Image Generation Modal (S3-05)', () => {
   });
 
   test('model selector is present with FLUX and SDXL options', async ({ page }) => {
+    // Mock the models API so we control the option labels
+    await page.route('**/api/models/image', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          models: [
+            { id: 'flux-schnell',   label: 'FLUX.1 Schnell',      provider: 'replicate', tier: 'free' },
+            { id: 'sdxl-lightning', label: 'SDXL Lightning',       provider: 'replicate', tier: 'free' },
+            { id: 'sdxl',           label: 'Stable Diffusion XL',  provider: 'replicate', tier: 'free' },
+          ],
+        }),
+      });
+    });
+    await page.goto('/media?tab=image');
     const select = page.getByTestId('image-gen-model');
-    await expect(select).toBeVisible();
+    // Wait for models to finish loading (select becomes enabled)
+    await expect(select).toBeEnabled({ timeout: 10000 });
     const options = await select.locator('option').allInnerTexts();
     expect(options.some((o) => o.includes('FLUX'))).toBeTruthy();
     expect(options.some((o) => o.includes('SDXL'))).toBeTruthy();
