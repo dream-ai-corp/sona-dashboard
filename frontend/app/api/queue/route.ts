@@ -1,0 +1,16 @@
+export const dynamic = 'force-dynamic';
+
+const BACKEND = process.env.BACKEND_URL ?? 'http://backend:3011';
+
+export async function GET() {
+  try {
+    const res = await fetch(`${BACKEND}/api/queue`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(5000),
+    });
+    const data = await res.json();
+    return Response.json(data, { status: res.status });
+  } catch {
+    return Response.json([], { status: 200 });
+  }
+}
