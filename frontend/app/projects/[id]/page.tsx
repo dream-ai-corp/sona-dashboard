@@ -466,6 +466,7 @@ function BacklogItemRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(item.text);
+  const [hovered, setHovered] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -498,6 +499,9 @@ function BacklogItemRow({
 
   return (
     <div
+      data-testid="backlog-item-row"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         padding: '10px 12px', borderRadius: '10px',
         background: item.status === 'in_progress' ? 'rgba(6,182,212,0.04)' : item.status === 'blocked' ? 'rgba(239,68,68,0.04)' : item.checked ? 'rgba(255,255,255,0.01)' : 'rgba(255,255,255,0.025)',
@@ -542,6 +546,7 @@ function BacklogItemRow({
         {editing ? (
           <div style={{ flex: 1, display: 'flex', gap: '6px', alignItems: 'center' }}>
             <input
+              data-testid="backlog-item-edit-input"
               ref={inputRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -557,32 +562,44 @@ function BacklogItemRow({
                 outline: 'none', fontFamily: 'inherit',
               }}
             />
-            <button onClick={commitEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4ade80', padding: '2px' }}>
+            <button
+              data-testid="backlog-item-save"
+              onClick={commitEdit}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4ade80', padding: '2px' }}
+            >
               <Check size={14} />
             </button>
-            <button onClick={cancelEdit} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f87171', padding: '2px' }}>
+            <button
+              data-testid="backlog-item-cancel"
+              onClick={cancelEdit}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f87171', padding: '2px' }}
+            >
               <X size={14} />
             </button>
           </div>
         ) : (
           <>
             <span
+              data-testid="backlog-item-text"
+              onClick={() => { setDraft(item.text); setEditing(true); }}
               style={{
                 flex: 1, fontSize: '13px', lineHeight: 1.5,
                 color: item.checked ? '#475569' : '#cbd5e1',
                 textDecoration: item.checked ? 'line-through' : 'none',
+                cursor: 'pointer',
               }}
             >
               {item.text}
             </span>
             <button
               onClick={() => { setDraft(item.text); setEditing(true); }}
+              title="Edit item"
               style={{
                 background: 'none', border: 'none', cursor: 'pointer',
-                color: '#334155', padding: '2px', opacity: 0,
+                color: '#64748b', padding: '2px',
+                opacity: hovered ? 1 : 0,
                 transition: 'opacity 150ms',
               }}
-              className="edit-btn"
             >
               <Pencil size={12} />
             </button>
