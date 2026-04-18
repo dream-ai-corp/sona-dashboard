@@ -136,6 +136,35 @@ db.exec(`
   );
 `);
 
+// ── Gallery: generated media table ───────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS generated_media (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL CHECK(type IN ('image','video','audio')),
+    prompt TEXT NOT NULL,
+    model TEXT NOT NULL,
+    provider TEXT,
+    url TEXT NOT NULL,
+    metadata TEXT,
+    created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
+  );
+  CREATE INDEX IF NOT EXISTS idx_generated_media_type ON generated_media(type);
+  CREATE INDEX IF NOT EXISTS idx_generated_media_created ON generated_media(created_at DESC);
+`);
+
+const insertMedia = db.prepare(`
+  INSERT INTO generated_media (id, type, prompt, model, provider, url, metadata, created_at)
+  VALUES (@id, @type, @prompt, @model, @provider, @url, @metadata, @created_at)
+`);
+
+function saveGeneratedMedia({ type, prompt, model, provider, url, metadata = null }) {
+  const { randomUUID } = require("crypto");
+  const id = randomUUID();
+  const created_at = Date.now();
+  insertMedia.run({ id, type, prompt, model, provider: provider ?? null, url, metadata: metadata ? JSON.stringify(metadata) : null, created_at });
+  return id;
+}
+
 // Prepared statements
 const upsertJob = db.prepare(`
   INSERT INTO jobs (id, goal, status, project, started_at, completed_at, result, exit_code, mtime)
@@ -2044,6 +2073,8 @@ app.post("/api/generate/image", async (req, res) => {
     }
     try {
       const result = await generateWithTogether(prompt.trim(), model, size, togetherKey);
+      const imageUrl = result.imageUrl ?? result.url;
+      if (imageUrl) { try { saveGeneratedMedia({ type: "image", prompt: prompt.trim(), model, provider: "together", url: imageUrl, metadata: { ratio } }); } catch (e) { console.error("[gallery] save error:", e.message); } }
       return res.json({ ok: true, ...result, model, ratio, prompt, provider: "together" });
     } catch (err) {
       console.error("[generate/image] Together.ai error:", err.message);
@@ -2058,6 +2089,8 @@ app.post("/api/generate/image", async (req, res) => {
     }
     try {
       const result = await generateWithFal(prompt.trim(), model, size, falKey);
+      const imageUrl = result.imageUrl ?? result.url;
+      if (imageUrl) { try { saveGeneratedMedia({ type: "image", prompt: prompt.trim(), model, provider: "fal", url: imageUrl, metadata: { ratio } }); } catch (e) { console.error("[gallery] save error:", e.message); } }
       return res.json({ ok: true, ...result, model, ratio, prompt, provider: "fal" });
     } catch (err) {
       console.error("[generate/image] Fal.ai error:", err.message);
@@ -2072,6 +2105,8 @@ app.post("/api/generate/image", async (req, res) => {
     }
     try {
       const result = await generateWithOpenRouter(prompt.trim(), model, size, openrouterKey);
+      const imageUrl = result.imageUrl ?? result.url;
+      if (imageUrl) { try { saveGeneratedMedia({ type: "image", prompt: prompt.trim(), model, provider: "openrouter", url: imageUrl, metadata: { ratio } }); } catch (e) { console.error("[gallery] save error:", e.message); } }
       return res.json({ ok: true, ...result, model, ratio, prompt, provider: "openrouter" });
     } catch (err) {
       console.error("[generate/image] OpenRouter error:", err.message);
@@ -2084,6 +2119,7 @@ app.post("/api/generate/image", async (req, res) => {
     // Dev placeholder when no keys configured at all
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size.width}" height="${size.height}"><rect width="100%" height="100%" fill="#1e1b4b"/><text x="50%" y="50%" font-family="monospace" font-size="32" fill="#a78bfa" text-anchor="middle" dominant-baseline="middle">[dev] ${encodeURIComponent(prompt.slice(0, 40))}</text></svg>`;
     const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+    try { saveGeneratedMedia({ type: "image", prompt: prompt.trim(), model, provider: "dev", url: dataUrl, metadata: { ratio, dev: true } }); } catch (e) { console.error("[gallery] save error:", e.message); }
     return res.json({ ok: true, imageUrl: dataUrl, model, ratio, prompt, dev: true });
   }
 
@@ -2107,6 +2143,7 @@ app.post("/api/generate/image", async (req, res) => {
     if (!output) throw new Error("No output from model");
 
     const imageUrl = Array.isArray(output) ? output[0] : output;
+    try { saveGeneratedMedia({ type: "image", prompt: prompt.trim(), model, provider: "replicate", url: imageUrl, metadata: { ratio } }); } catch (e) { console.error("[gallery] save error:", e.message); }
     res.json({ ok: true, imageUrl, model, ratio, prompt, provider: "replicate" });
   } catch (err) {
     console.error("[generate/image] Replicate error:", err.message);
@@ -2233,6 +2270,7 @@ async function runVideoGeneration(jobId, prompt, model, duration) {
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="100%" height="100%" fill="#1e1b4b"/><text x="50%" y="50%" font-family="monospace" font-size="22" fill="#a78bfa" text-anchor="middle" dominant-baseline="middle">[dev] ${prompt.slice(0, 40)}</text></svg>`;
       const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
       updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Terminé (dev mode)", url: dataUrl });
+      try { saveGeneratedMedia({ type: "video", prompt, model, provider: "dev", url: dataUrl, metadata: { duration, dev: true } }); } catch (e) { console.error("[gallery] save error:", e.message); }
       return;
     }
 
@@ -2254,6 +2292,7 @@ async function runVideoGeneration(jobId, prompt, model, duration) {
       updateVideoJob(jobId, { progress: 15, message: "Requête soumise, génération en cours…" });
       const result = await pollFalVideo(VIDEO_MODEL_FAL[model], submission.request_id, falKey, jobId);
       updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Vidéo générée !", url: result.url });
+      try { saveGeneratedMedia({ type: "video", prompt, model, provider: "fal", url: result.url, metadata: { duration } }); } catch (e) { console.error("[gallery] save error:", e.message); }
       return;
     }
 
@@ -2279,6 +2318,7 @@ async function runVideoGeneration(jobId, prompt, model, duration) {
       updateVideoJob(jobId, { progress: 15, message: "Prédiction créée, génération en cours…" });
       const result = await pollReplicateVideo(prediction.id, replicateKey, jobId);
       updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Vidéo générée !", url: result.url });
+      try { saveGeneratedMedia({ type: "video", prompt, model, provider: "replicate", url: result.url, metadata: { duration } }); } catch (e) { console.error("[gallery] save error:", e.message); }
       return;
     }
 
@@ -2360,6 +2400,50 @@ app.get("/api/generate/video/:jobId/progress", (req, res) => {
     clearInterval(pollInterval);
     clearInterval(heartbeat);
   });
+});
+
+// ── Gallery API ───────────────────────────────────────────────────────────────
+// GET /api/gallery?type=all|image|video|audio&limit=50&offset=0&from=ISO&to=ISO
+app.get("/api/gallery", (req, res) => {
+  const { type = "all", limit = 50, offset = 0, from, to } = req.query;
+  const lim = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+  const off = Math.max(parseInt(offset, 10) || 0, 0);
+
+  let where = "1=1";
+  const params = [];
+
+  if (type && type !== "all") {
+    where += " AND type = ?";
+    params.push(type);
+  }
+  if (from) {
+    where += " AND created_at >= ?";
+    params.push(new Date(from).getTime());
+  }
+  if (to) {
+    where += " AND created_at <= ?";
+    params.push(new Date(to).getTime() + 86400000); // include end of day
+  }
+
+  const rows = db.prepare(`SELECT * FROM generated_media WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, lim, off);
+  const totalRow = db.prepare(`SELECT COUNT(*) as cnt FROM generated_media WHERE ${where}`).get(...params);
+
+  const items = rows.map((r) => ({
+    ...r,
+    metadata: r.metadata ? JSON.parse(r.metadata) : null,
+    created_at: new Date(r.created_at).toISOString(),
+  }));
+
+  res.json({ ok: true, items, total: totalRow.cnt });
+});
+
+// DELETE /api/gallery/:id
+app.delete("/api/gallery/:id", (req, res) => {
+  const { id } = req.params;
+  const row = db.prepare("SELECT id FROM generated_media WHERE id = ?").get(id);
+  if (!row) return res.status(404).json({ ok: false, error: "Item not found" });
+  db.prepare("DELETE FROM generated_media WHERE id = ?").run(id);
+  res.json({ ok: true });
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────

@@ -23,6 +23,7 @@ import {
   Repeat2,
   ListOrdered,
   Layers,
+  Images,
 } from 'lucide-react';
 
 const navItems = [
@@ -33,6 +34,7 @@ const navItems = [
   { icon: Activity,        label: 'Activity',       route: '/activity' },
   { icon: MessageSquare,   label: 'Conversations',  route: '/conversations' },
   { icon: Layers,          label: 'Média',          route: '/media' },
+  { icon: Images,          label: 'Galerie',        route: '/gallery' },
   { icon: Cpu,             label: 'System',         route: '/system' },
   { icon: Brain,           label: 'Memory',         route: '/memory' },
   { icon: FolderKanban,    label: 'Projects',       route: '/projects' },
