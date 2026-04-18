@@ -124,6 +124,11 @@ db.exec(`
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER DEFAULT (strftime('%s','now') * 1000)
   );
+
+  CREATE TABLE IF NOT EXISTS media_settings (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL DEFAULT 0
+  );
 `);
 
 // Prepared statements
@@ -2857,6 +2862,40 @@ app.get("/api/backlogs/:projectId/full", (req, res) => {
   }
 
   res.json({ items: allItems, sections, sprints });
+});
+
+// ── Media Settings ─────────────────────────────────────────────────────────────
+// GET  /api/settings/media  → { images: boolean, video: boolean, audio: boolean }
+// PATCH /api/settings/media → partial update, returns updated state
+
+function getMediaSettings() {
+  const rows = db.prepare("SELECT key, value FROM media_settings").all();
+  const map = Object.fromEntries(rows.map((r) => [r.key, r.value === 1]));
+  return {
+    images: map.images ?? false,
+    video: map.video ?? false,
+    audio: map.audio ?? false,
+  };
+}
+
+app.get("/api/settings/media", (req, res) => {
+  res.json(getMediaSettings());
+});
+
+app.patch("/api/settings/media", (req, res) => {
+  const allowed = ["images", "video", "audio"];
+  const upsert = db.prepare(
+    "INSERT INTO media_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  );
+  const update = db.transaction((body) => {
+    for (const [key, val] of Object.entries(body)) {
+      if (allowed.includes(key) && typeof val === "boolean") {
+        upsert.run(key, val ? 1 : 0);
+      }
+    }
+  });
+  update(req.body);
+  res.json(getMediaSettings());
 });
 
 // Kick off initial status fetch
