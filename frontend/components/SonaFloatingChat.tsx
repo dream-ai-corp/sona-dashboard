@@ -9,12 +9,173 @@ interface Attachment { id: string; dataUrl: string; name: string; size: number; 
 interface ConversationRow { id: number; role: string; content: string; channel: string; timestamp: number; }
 interface AudioDevice { deviceId: string; label: string; kind: 'audioinput' | 'audiooutput'; }
 
+// ─── S3-11: Voice intent types ──────────────────────────────────────────────
+type MediaIntent = 'generate_image' | 'generate_video';
+
+interface IntentResult { intent: MediaIntent | null; prompt: string | null; }
+
+interface MediaMessage {
+  type: 'generating_image' | 'generated_image' | 'generating_video' | 'generated_video' | 'generate_error';
+  url?: string;
+  jobId?: string;
+  prompt: string;
+  error?: string;
+}
+
 const MAX_ATTACHMENTS = 5;
 const HOLD_THRESHOLD_MS = 350;
 const VAD_SPEAKING_THRESHOLD = 0.03;
 const VAD_SILENCE_MS = 1500;
 const VAD_MIN_SEGMENT_MS = 400;
 const SILENT_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+
+// ─── S3-11: Intent detection + media generation helpers ─────────────────────
+
+async function detectIntent(transcript: string): Promise<IntentResult> {
+  try {
+    const res = await fetch('/api/intent/detect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: transcript }),
+    });
+    if (!res.ok) return { intent: null, prompt: null };
+    return res.json();
+  } catch {
+    return { intent: null, prompt: null };
+  }
+}
+
+async function postMediaMessage(msg: MediaMessage): Promise<void> {
+  await fetch('/api/conversations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      role: 'assistant',
+      content: JSON.stringify(msg),
+      channel: 'dashboard',
+    }),
+  });
+}
+
+async function pollVideoJob(jobId: string, prompt: string): Promise<void> {
+  const MAX_POLLS = 60;
+  const INTERVAL_MS = 5000;
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise(r => setTimeout(r, INTERVAL_MS));
+    try {
+      const res = await fetch(`/api/generate/video/${jobId}`);
+      if (!res.ok) break;
+      const job = await res.json();
+      if (job.status === 'done' && job.url) {
+        await postMediaMessage({ type: 'generated_video', url: job.url, jobId, prompt });
+        return;
+      }
+      if (job.status === 'failed' || job.status === 'error') {
+        await postMediaMessage({ type: 'generate_error', error: job.error || 'Génération échouée', prompt });
+        return;
+      }
+    } catch { break; }
+  }
+  await postMediaMessage({ type: 'generate_error', error: 'Timeout — la génération vidéo prend trop longtemps', prompt });
+}
+
+async function handleMediaIntent(intent: MediaIntent, prompt: string): Promise<void> {
+  if (intent === 'generate_image') {
+    await postMediaMessage({ type: 'generating_image', prompt });
+    try {
+      const res = await fetch('/api/generate/image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, model: 'pollinations-flux', width: 1024, height: 1024 }),
+      });
+      const data = await res.json();
+      if (data.url) {
+        await postMediaMessage({ type: 'generated_image', url: data.url, prompt });
+      } else {
+        await postMediaMessage({ type: 'generate_error', error: data.error || 'Génération échouée', prompt });
+      }
+    } catch (e) {
+      await postMediaMessage({ type: 'generate_error', error: e instanceof Error ? e.message : 'Erreur inconnue', prompt });
+    }
+  } else {
+    await postMediaMessage({ type: 'generating_video', prompt });
+    try {
+      const res = await fetch('/api/generate/video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt, model: 'wan2.1', duration: 4 }),
+      });
+      const data = await res.json();
+      if (data.ok && data.jobId) {
+        void pollVideoJob(data.jobId, prompt);
+      } else {
+        await postMediaMessage({ type: 'generate_error', error: data.error || 'Génération échouée', prompt });
+      }
+    } catch (e) {
+      await postMediaMessage({ type: 'generate_error', error: e instanceof Error ? e.message : 'Erreur inconnue', prompt });
+    }
+  }
+}
+
+async function detectAndHandleIntent(transcript: string): Promise<void> {
+  const { intent, prompt } = await detectIntent(transcript);
+  if (intent && prompt) await handleMediaIntent(intent, prompt);
+}
+
+// ─── S3-11: Render a chat message — handles media JSON or plain text ─────────
+function renderMessageContent(content: string) {
+  let parsed: MediaMessage | null = null;
+  try { parsed = JSON.parse(content) as MediaMessage; } catch {}
+
+  if (parsed && parsed.type) {
+    switch (parsed.type) {
+      case 'generating_image':
+        return (
+          <div style={{ fontSize: '12px', color: '#a78bfa' }}>
+            <span style={{ marginRight: '6px' }}>🎨</span>
+            Génération image en cours pour <em>"{parsed.prompt}"</em>…
+          </div>
+        );
+      case 'generated_image':
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <img
+              data-testid="chat-generated-image"
+              src={parsed.url}
+              alt={parsed.prompt}
+              style={{ maxWidth: '100%', borderRadius: '8px', border: '1px solid rgba(167,139,250,0.3)' }}
+            />
+            <div style={{ fontSize: '10px', color: '#64748b' }}>🎨 {parsed.prompt}</div>
+          </div>
+        );
+      case 'generating_video':
+        return (
+          <div style={{ fontSize: '12px', color: '#67e8f9' }}>
+            <span style={{ marginRight: '6px' }}>🎬</span>
+            Génération vidéo en cours pour <em>"{parsed.prompt}"</em>…
+          </div>
+        );
+      case 'generated_video':
+        return (
+          <div data-testid="chat-generated-video" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <video
+              src={parsed.url}
+              controls
+              style={{ maxWidth: '100%', borderRadius: '8px', border: '1px solid rgba(103,232,249,0.3)' }}
+            />
+            <div style={{ fontSize: '10px', color: '#64748b' }}>🎬 {parsed.prompt}</div>
+          </div>
+        );
+      case 'generate_error':
+        return (
+          <div style={{ fontSize: '12px', color: '#fca5a5' }}>
+            ⚠ Erreur : {parsed.error}
+          </div>
+        );
+    }
+  }
+  return <>{content}</>;
+}
 
 export default function SonaFloatingChat() {
   const [open, setOpen] = useState(false);
@@ -223,6 +384,8 @@ export default function SonaFloatingChat() {
           let data: any = null;
           try { const txt = await res.text(); if (txt?.trim()) data = JSON.parse(txt); else continue; } catch { continue; }
           if (!data?.ok) continue;
+          // S3-11: Detect media generation intent from transcript (fire-and-forget)
+          if (data.transcript) void detectAndHandleIntent(data.transcript);
           if (data.audio_base64 && audioRef.current) {
             setStatus('playing');
             await new Promise<void>(resolve => {
@@ -317,6 +480,8 @@ export default function SonaFloatingChat() {
           try { const txt = await res.text(); if (txt?.trim()) data = JSON.parse(txt); } catch {}
           if (!data?.ok) { setStatus('error'); setMicMode('idle'); setError(data?.error || 'Error'); setTimeout(() => { setStatus('idle'); setError(''); }, 3000); return; }
           if (data.skipped) { setStatus('idle'); setMicMode('idle'); return; }
+          // S3-11: Detect media generation intent from transcript (fire-and-forget)
+          if (data.transcript) void detectAndHandleIntent(data.transcript);
           setStatus('playing');
           if (data.audio_base64 && audioRef.current) {
             const bin = atob(data.audio_base64);
@@ -544,7 +709,7 @@ export default function SonaFloatingChat() {
                     border: `1px solid ${isUser ? 'rgba(124,58,237,0.3)' : 'rgba(148,163,184,0.1)'}`,
                     fontSize: '13px', color: '#e2e8f0', lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                   }}>
-                    <div>{m.content}</div>
+                    <div>{renderMessageContent(m.content)}</div>
                     <div style={{ fontSize: '9px', color: '#64748b', marginTop: '4px', display: 'flex', gap: '6px' }}>
                       <span>{fmtTime(m.timestamp)}</span><span style={{ opacity: 0.6 }}>·</span><span style={{ textTransform: 'uppercase', letterSpacing: '0.3px' }}>{m.channel}</span>
                     </div>
