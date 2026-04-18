@@ -13,7 +13,7 @@ async function mockSuccessfulGeneration(page: Page, jobId = TEST_JOB_ID) {
       body: JSON.stringify({ ok: true, jobId }),
     });
   });
-  const sseBody = `data: ${JSON.stringify({ status: 'succeeded', progress: 100, message: 'Terminé', url: FAKE_VIDEO })}\n\n`;
+  const sseBody = `data: ${JSON.stringify({ status: 'done', progress: 100, message: 'Terminé', url: FAKE_VIDEO })}\n\n`;
   await page.route(`**/${jobId}/progress`, async (route) => {
     await route.fulfill({
       status: 200,

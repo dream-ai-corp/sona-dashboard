@@ -2158,7 +2158,7 @@ function updateVideoJob(jobId, updates) {
 setInterval(() => {
   const cutoff = Date.now() - 10 * 60 * 1000;
   for (const [id, job] of videoJobs) {
-    if (job.status !== "running" && job.status !== "pending" && job.createdAt < cutoff) {
+    if (job.status !== "processing" && job.status !== "pending" && job.createdAt < cutoff) {
       videoJobs.delete(id);
     }
   }
@@ -2222,7 +2222,7 @@ async function pollFalVideo(endpoint, requestId, apiKey, jobId, maxWaitMs = 180_
 }
 
 async function runVideoGeneration(jobId, prompt, model, duration) {
-  updateVideoJob(jobId, { status: "running", progress: 5, message: "Connexion au provider…" });
+  updateVideoJob(jobId, { status: "processing", progress: 5, message: "Connexion au provider…" });
   try {
     const replicateKey = getProviderKey("replicate");
     const falKey = getProviderKey("fal");
@@ -2232,7 +2232,7 @@ async function runVideoGeneration(jobId, prompt, model, duration) {
       await new Promise((r) => setTimeout(r, 1500));
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="100%" height="100%" fill="#1e1b4b"/><text x="50%" y="50%" font-family="monospace" font-size="22" fill="#a78bfa" text-anchor="middle" dominant-baseline="middle">[dev] ${prompt.slice(0, 40)}</text></svg>`;
       const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
-      updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Terminé (dev mode)", url: dataUrl });
+      updateVideoJob(jobId, { status: "done", progress: 100, message: "Terminé (dev mode)", url: dataUrl });
       return;
     }
 
@@ -2253,7 +2253,7 @@ async function runVideoGeneration(jobId, prompt, model, duration) {
       if (!submission.request_id) throw new Error("fal.ai: no request_id");
       updateVideoJob(jobId, { progress: 15, message: "Requête soumise, génération en cours…" });
       const result = await pollFalVideo(VIDEO_MODEL_FAL[model], submission.request_id, falKey, jobId);
-      updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Vidéo générée !", url: result.url });
+      updateVideoJob(jobId, { status: "done", progress: 100, message: "Vidéo générée !", url: result.url });
       return;
     }
 
@@ -2278,21 +2278,21 @@ async function runVideoGeneration(jobId, prompt, model, duration) {
       if (!prediction.id) throw new Error("Replicate: no prediction ID");
       updateVideoJob(jobId, { progress: 15, message: "Prédiction créée, génération en cours…" });
       const result = await pollReplicateVideo(prediction.id, replicateKey, jobId);
-      updateVideoJob(jobId, { status: "succeeded", progress: 100, message: "Vidéo générée !", url: result.url });
+      updateVideoJob(jobId, { status: "done", progress: 100, message: "Vidéo générée !", url: result.url });
       return;
     }
 
     throw new Error("Aucun provider configuré. Ajoutez votre clé Replicate dans Paramètres → Connexions.");
   } catch (err) {
     console.error("[generate/video] error:", err.message);
-    updateVideoJob(jobId, { status: "failed", progress: 0, message: err.message, error: err.message });
+    updateVideoJob(jobId, { status: "error", progress: 0, message: err.message, error: err.message });
   }
 }
 
 app.post("/api/generate/video", (req, res) => {
   const { prompt, model = "wan2.1", duration = 4 } = req.body || {};
   if (!prompt || typeof prompt !== "string" || !prompt.trim()) {
-    return res.status(400).json({ ok: false, error: "prompt is required" });
+    return res.status(400).json({ ok: false, error: "prompt requis" });
   }
   if (typeof model !== "string") {
     return res.status(400).json({ ok: false, error: "model must be a string" });
@@ -2303,14 +2303,15 @@ app.post("/api/generate/video", (req, res) => {
   const jobId = createVideoJob();
   runVideoGeneration(jobId, prompt.trim(), model, duration).catch((err) => {
     console.error("[generate/video] unhandled:", err.message);
-    updateVideoJob(jobId, { status: "failed", error: err.message, message: err.message });
+    updateVideoJob(jobId, { status: "error", error: err.message, message: err.message });
   });
-  res.json({ ok: true, jobId });
+  res.status(202).json({ ok: true, jobId });
 });
 
 app.get("/api/generate/video/:jobId", (req, res) => {
   const job = videoJobs.get(req.params.jobId);
   if (!job) return res.status(404).json({ ok: false, error: "Job not found" });
+  if (job.status === "error") return res.status(502).json({ ok: false, error: job.error || "Erreur provider" });
   res.json({ ok: true, ...job });
 });
 
@@ -2329,7 +2330,7 @@ app.get("/api/generate/video/:jobId/progress", (req, res) => {
 
   // If already terminal, close right away
   const initial = videoJobs.get(jobId);
-  if (initial && (initial.status === "succeeded" || initial.status === "failed")) {
+  if (initial && (initial.status === "done" || initial.status === "error")) {
     res.end();
     return;
   }
@@ -2344,7 +2345,7 @@ app.get("/api/generate/video/:jobId/progress", (req, res) => {
       res.write(`data: ${serialized}\n\n`);
       lastSent = serialized;
     }
-    if (j.status === "succeeded" || j.status === "failed") {
+    if (j.status === "done" || j.status === "error") {
       clearInterval(pollInterval);
       clearInterval(heartbeat);
       if (!res.writableEnded) res.end();

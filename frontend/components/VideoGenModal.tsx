@@ -129,12 +129,12 @@ export default function VideoGenModal() {
         setProgress(job.progress ?? 0);
         setProgressMsg(job.message ?? '');
 
-        if (job.status === 'succeeded') {
+        if (job.status === 'done') {
           setVideoUrl(job.url ?? null);
           setGenState('done');
           es.close();
           esRef.current = null;
-        } else if (job.status === 'failed') {
+        } else if (job.status === 'error') {
           setErrorMsg(job.error ?? 'Génération échouée');
           setGenState('error');
           es.close();
